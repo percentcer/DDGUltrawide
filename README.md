@@ -1,3 +1,5 @@
+<img width="5120" height="1440" alt="image" src="https://github.com/user-attachments/assets/89840846-e50e-43d1-a209-5699d463b5e2" />
+
 # DDGUltrawide
 
 A drop-in `version.dll` for Densha de Go!! AC (TG4AC, 5.80.02) that shows the
