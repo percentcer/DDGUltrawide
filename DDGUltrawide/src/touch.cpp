@@ -32,7 +32,7 @@ namespace
 
     bool IsTouchRegion(int i)
     {
-        for (int r : g_cfg.touchRegions)
+        for (int r : g_cfg.touchScreens)
             if (r == i) return true;
         return false;
     }
@@ -42,15 +42,15 @@ namespace
     bool MapClientPoint(int ox, int oy, int forceRegion, POINT& game, int& regionOut)
     {
         HWND gw = g_game.load();
-        if (!gw || g_cfg.resW <= 0 || g_cfg.resH <= 0) return false;
+        if (!gw || g_cfg.outW <= 0 || g_cfg.outH <= 0) return false;
 
         RECT gc;
         if (!GetClientRect(gw, &gc) || gc.right <= 0 || gc.bottom <= 0) return false;
 
-        const std::vector<Rect> dst = SnappedLayout();
-        const size_t n = dst.size() < g_cfg.sources.size() ? dst.size() : g_cfg.sources.size();
-        const float fx = (ox + 0.5f) / g_cfg.resW;
-        const float fy = (oy + 0.5f) / g_cfg.resH;
+        const std::vector<Rect> dst = SnappedDests();
+        const size_t n = g_cfg.ScreenCount();
+        const float fx = (ox + 0.5f) / g_cfg.outW;
+        const float fy = (oy + 0.5f) / g_cfg.outH;
 
         for (size_t i = 0; i < n; ++i)
         {
@@ -84,7 +84,7 @@ namespace
         if (!ScreenToClient(ow, &c)) return false;
 
         const int capture = g_captureRegion.load();
-        const bool inside = c.x >= 0 && c.y >= 0 && c.x < g_cfg.resW && c.y < g_cfg.resH;
+        const bool inside = c.x >= 0 && c.y >= 0 && c.x < g_cfg.outW && c.y < g_cfg.outH;
         if (!inside && capture < 0) return false;
 
         POINT g;
@@ -117,8 +117,8 @@ namespace
 
         const float fx = (g.x + 0.5f) / gc.right;
         const float fy = (g.y + 0.5f) / gc.bottom;
-        const std::vector<Rect> dst = SnappedLayout();
-        const size_t n = dst.size() < g_cfg.sources.size() ? dst.size() : g_cfg.sources.size();
+        const std::vector<Rect> dst = SnappedDests();
+        const size_t n = g_cfg.ScreenCount();
 
         for (size_t i = 0; i < n; ++i)
         {
@@ -129,8 +129,8 @@ namespace
             if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
 
             const Rect& d = dst[i];
-            POINT o = { static_cast<LONG>((d.originX + u * d.sizeX) * g_cfg.resW),
-                        static_cast<LONG>((d.originY + v * d.sizeY) * g_cfg.resH) };
+            POINT o = { static_cast<LONG>((d.originX + u * d.sizeX) * g_cfg.outW),
+                        static_cast<LONG>((d.originY + v * d.sizeY) * g_cfg.outH) };
             if (!ClientToScreen(ow, &o)) return -1;
             out = o;
             return 1;
@@ -214,7 +214,7 @@ bool InstallTouchHooks()
     ok = ok && MH_CreateHookApi(L"user32", "SetCursorPos", reinterpret_cast<void*>(&Hook_SetCursorPos),
                                 reinterpret_cast<void**>(&g_origSetCursorPos)) == MH_OK;
     ok = ok && MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
-    LOG(ok ? "Touch hooks installed (%zu touch regions)" : "Touch hooks FAILED", g_cfg.touchRegions.size());
+    LOG(ok ? "Touch hooks installed (%zu touch screens)" : "Touch hooks FAILED", g_cfg.touchScreens.size());
     return ok;
 }
 
@@ -223,7 +223,7 @@ void TouchSetGameWindow(HWND game) { g_game.store(game); }
 
 bool TouchHandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT& result)
 {
-    if (msg == WM_SETCURSOR && g_cfg.touchHideCursor && LOWORD(lp) == HTCLIENT)
+    if (msg == WM_SETCURSOR && g_cfg.hideCursor && LOWORD(lp) == HTCLIENT)
     {
         SetCursor(nullptr);
         result = TRUE;

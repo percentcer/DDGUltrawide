@@ -17,158 +17,162 @@ namespace
         return buf;
     }
 
-    // Parses "0.5", "1/3", "5/12", etc.
-    bool ParseNumber(std::wstring s, float& out)
+    int ReadInt(const std::wstring& ini, const wchar_t* section, const wchar_t* key, int def)
+    {
+        return GetPrivateProfileIntW(section, key, def, ini.c_str());
+    }
+
+    std::wstring Trim(std::wstring s)
     {
         while (!s.empty() && iswspace(s.front())) s.erase(s.begin());
         while (!s.empty() && iswspace(s.back())) s.pop_back();
+        return s;
+    }
+
+    // Parses "0.5", "1/3", "5/12", etc.
+    bool ParseNumber(std::wstring s, float& out)
+    {
+        s = Trim(s);
         if (s.empty()) return false;
 
-        size_t slash = s.find(L'/');
         wchar_t* end = nullptr;
+        const size_t slash = s.find(L'/');
         if (slash == std::wstring::npos)
         {
             out = static_cast<float>(wcstod(s.c_str(), &end));
             return end && *end == 0;
         }
-        std::wstring a = s.substr(0, slash), b = s.substr(slash + 1);
-        double num = wcstod(a.c_str(), &end);
+        const std::wstring a = Trim(s.substr(0, slash)), b = Trim(s.substr(slash + 1));
+        const double num = wcstod(a.c_str(), &end);
         if (!end || *end != 0) return false;
-        double den = wcstod(b.c_str(), &end);
+        const double den = wcstod(b.c_str(), &end);
         if (!end || *end != 0 || den == 0) return false;
         out = static_cast<float>(num / den);
         return true;
     }
 
-    // "SizeX, SizeY, OriginX, OriginY"
-    bool ParseRect(const std::wstring& s, Rect& r)
+    std::vector<std::wstring> SplitCommas(const std::wstring& s)
     {
-        float v[4];
+        std::vector<std::wstring> parts;
         size_t start = 0;
-        for (int i = 0; i < 4; ++i)
+        for (;;)
         {
-            size_t comma = s.find(L',', start);
-            std::wstring part = s.substr(start, comma == std::wstring::npos ? std::wstring::npos : comma - start);
-            if (!ParseNumber(part, v[i])) return false;
-            if (comma == std::wstring::npos && i < 3) return false;
-            start = comma + 1;
-        }
-        r = { v[0], v[1], v[2], v[3] };
-        return true;
-    }
-}
-
-bool LoadConfig(const std::wstring& ini)
-{
-    if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES)
-    {
-        LOG("Config not found: %ls", ini.c_str());
-        return false;
-    }
-
-    g_cfg.compositor = GetPrivateProfileIntW(L"Mode", L"Compositor", 1, ini.c_str()) != 0;
-    g_cfg.outX = GetPrivateProfileIntW(L"Output", L"X", 0, ini.c_str());
-    g_cfg.outY = GetPrivateProfileIntW(L"Output", L"Y", 0, ini.c_str());
-    g_cfg.outVSync = GetPrivateProfileIntW(L"Output", L"VSync", 1, ini.c_str()) != 0;
-    g_cfg.gameWindowMode = GetPrivateProfileIntW(L"Output", L"GameWindow", 0, ini.c_str());
-
-    g_cfg.touchEnabled = GetPrivateProfileIntW(L"Touch", L"Enabled", 1, ini.c_str()) != 0;
-    g_cfg.touchHideCursor = GetPrivateProfileIntW(L"Touch", L"HideCursor", 0, ini.c_str()) != 0;
-    {
-        std::wstring list = ReadString(ini, L"Touch", L"Screens", L"3");
-        g_cfg.touchRegions.clear();
-        size_t start = 0;
-        while (start <= list.size())
-        {
-            size_t comma = list.find(L',', start);
-            std::wstring part = list.substr(start, comma == std::wstring::npos ? std::wstring::npos : comma - start);
-            float v;
-            if (ParseNumber(part, v)) g_cfg.touchRegions.push_back(static_cast<int>(v));
+            const size_t comma = s.find(L',', start);
+            parts.push_back(s.substr(start, comma == std::wstring::npos ? std::wstring::npos : comma - start));
             if (comma == std::wstring::npos) break;
             start = comma + 1;
         }
+        return parts;
     }
 
-    g_cfg.resW = GetPrivateProfileIntW(L"Display", L"Width", g_cfg.resW, ini.c_str());
-    g_cfg.resH = GetPrivateProfileIntW(L"Display", L"Height", g_cfg.resH, ini.c_str());
-    g_cfg.pixelSnap = GetPrivateProfileIntW(L"Display", L"PixelSnap", 1, ini.c_str()) != 0;
-    g_cfg.extraCommandLine = ReadString(ini, L"Display", L"ExtraCommandLine", L"");
-
-    g_cfg.players.clear();
-    for (int i = 0; i < 8; ++i)
+    // "SizeX, SizeY, OriginX, OriginY"
+    bool ParseRect(const std::wstring& s, Rect& r)
     {
-        wchar_t key[8];
-        swprintf(key, 8, L"P%d", i);
-        std::wstring val = ReadString(ini, L"Layout", key, L"");
-        if (val.empty()) break;
-        Rect r;
-        if (!ParseRect(val, r))
+        const std::vector<std::wstring> parts = SplitCommas(s);
+        if (parts.size() != 4) return false;
+        float v[4];
+        for (int i = 0; i < 4; ++i)
+            if (!ParseNumber(parts[i], v[i])) return false;
+        r = { v[0], v[1], v[2], v[3] };
+        return true;
+    }
+
+    // Reads Prefix0, Prefix1, ... until the first missing key. Keeps the defaults
+    // if the section has no entries or any entry is malformed.
+    void ReadRects(const std::wstring& ini, const wchar_t* section, const wchar_t* prefix, std::vector<Rect>& target)
+    {
+        std::vector<Rect> rects;
+        for (int i = 0; i < 16; ++i)
         {
-            LOG("Bad [Layout] %ls: %ls", key, val.c_str());
-            return false;
+            wchar_t key[16];
+            swprintf(key, 16, L"%ls%d", prefix, i);
+            const std::wstring val = ReadString(ini, section, key, L"");
+            if (val.empty()) break;
+            Rect r;
+            if (!ParseRect(val, r))
+            {
+                LOG("Bad [%ls] %ls: %ls (using defaults for this section)", section, key, val.c_str());
+                return;
+            }
+            rects.push_back(r);
         }
-        g_cfg.players.push_back(r);
+        if (!rects.empty()) target = rects;
     }
 
-    g_cfg.uiScaleEnabled = GetPrivateProfileIntW(L"UI", L"FixScale", 1, ini.c_str()) != 0;
-    g_cfg.uiReferencePlayer = GetPrivateProfileIntW(L"UI", L"ReferencePlayer", 0, ini.c_str());
+    void LogRects(const char* name, const std::vector<Rect>& rects)
     {
-        float dh = 1080.0f;
-        if (ParseNumber(ReadString(ini, L"UI", L"DesignHeight", L"1080"), dh)) g_cfg.uiDesignHeight = dh;
+        for (size_t i = 0; i < rects.size(); ++i)
+        {
+            const Rect& r = rects[i];
+            LOG("  %s%zu: size %.4f x %.4f, origin %.4f, %.4f", name, i, r.sizeX, r.sizeY, r.originX, r.originY);
+        }
     }
-
-    // Source regions; default to the stock 2x2 quadrants (TL, TR, BL, BR)
-    g_cfg.sources.clear();
-    const Rect defaults[4] = { {0.5f, 0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f, 0.0f},
-                               {0.5f, 0.5f, 0.0f, 0.5f}, {0.5f, 0.5f, 0.5f, 0.5f} };
-    for (int i = 0; i < 8; ++i)
-    {
-        wchar_t key[8];
-        swprintf(key, 8, L"S%d", i);
-        std::wstring val = ReadString(ini, L"Source", key, L"");
-        Rect r;
-        if (!val.empty() && ParseRect(val, r)) g_cfg.sources.push_back(r);
-        else if (val.empty() && i < 4) g_cfg.sources.push_back(defaults[i]);
-        else if (!val.empty()) { LOG("Bad [Source] %ls: %ls", key, val.c_str()); return false; }
-        else break;
-    }
-
-    g_cfg.layoutPlayersRva = wcstoull(ReadString(ini, L"Addresses", L"LayoutPlayersRVA", L"0").c_str(), nullptr, 0);
-    g_cfg.dpiScaleRva = wcstoull(ReadString(ini, L"Addresses", L"DPIScaleRVA", L"0").c_str(), nullptr, 0);
-    g_cfg.offSplitscreenInfo = static_cast<uint32_t>(wcstoul(ReadString(ini, L"Addresses", L"SplitscreenInfoOffset", L"0x60").c_str(), nullptr, 0));
-    g_cfg.offActiveType = static_cast<uint32_t>(wcstoul(ReadString(ini, L"Addresses", L"ActiveSplitscreenTypeOffset", L"0x78").c_str(), nullptr, 0));
-
-    LOG("Mode: %s", g_cfg.compositor ? "compositor" : "layout hooks");
-    LOG("Config: %dx%d, pixel snap %d, %zu players, LayoutPlayers RVA 0x%llX, DPIScale RVA 0x%llX",
-        g_cfg.resW, g_cfg.resH, g_cfg.pixelSnap ? 1 : 0, g_cfg.players.size(),
-        static_cast<unsigned long long>(g_cfg.layoutPlayersRva),
-        static_cast<unsigned long long>(g_cfg.dpiScaleRva));
-    for (size_t i = 0; i < g_cfg.players.size(); ++i)
-    {
-        const Rect& r = g_cfg.players[i];
-        LOG("  P%zu: size %.4f x %.4f, origin %.4f, %.4f", i, r.sizeX, r.sizeY, r.originX, r.originY);
-    }
-    return true;
 }
 
-std::vector<Rect> SnappedLayout()
+void LoadConfig(const std::wstring& ini)
 {
-    if (!g_cfg.pixelSnap || g_cfg.resW <= 0 || g_cfg.resH <= 0) return g_cfg.players;
+    // Defaults: the cabinet's 2x2 frame drawn as three screens across the top
+    // and the touch panel centered below.
+    g_cfg.dests = { {1.0f / 3, 2.0f / 3, 0.0f, 0.0f},
+                    {1.0f / 3, 2.0f / 3, 1.0f / 3, 0.0f},
+                    {1.0f / 3, 2.0f / 3, 2.0f / 3, 0.0f},
+                    {1.0f / 6, 1.0f / 3, 5.0f / 12, 2.0f / 3} };
+    g_cfg.sources = { {0.5f, 0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f, 0.0f},
+                      {0.5f, 0.5f, 0.0f, 0.5f}, {0.5f, 0.5f, 0.5f, 0.5f} };
+
+    if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES)
+        LOG("Config not found (%ls); using defaults", ini.c_str());
+
+    g_cfg.outW = ReadInt(ini, L"Output", L"Width", g_cfg.outW);
+    g_cfg.outH = ReadInt(ini, L"Output", L"Height", g_cfg.outH);
+    g_cfg.outX = ReadInt(ini, L"Output", L"X", g_cfg.outX);
+    g_cfg.outY = ReadInt(ini, L"Output", L"Y", g_cfg.outY);
+    g_cfg.vsync = ReadInt(ini, L"Output", L"VSync", 1) != 0;
+    g_cfg.pixelSnap = ReadInt(ini, L"Output", L"PixelSnap", 1) != 0;
+    g_cfg.gameWindowMode = ReadInt(ini, L"Output", L"GameWindow", 0);
+
+    ReadRects(ini, L"Layout", L"P", g_cfg.dests);
+    ReadRects(ini, L"Source", L"S", g_cfg.sources);
+
+    g_cfg.touchEnabled = ReadInt(ini, L"Touch", L"Enabled", 1) != 0;
+    g_cfg.hideCursor = ReadInt(ini, L"Touch", L"HideCursor", 0) != 0;
+    g_cfg.touchScreens.clear();
+    for (const std::wstring& part : SplitCommas(ReadString(ini, L"Touch", L"Screens", L"3")))
+    {
+        float v;
+        if (ParseNumber(part, v)) g_cfg.touchScreens.push_back(static_cast<int>(v));
+    }
+
+    g_cfg.extraCommandLine = ReadString(ini, L"Game", L"ExtraCommandLine", L"");
+
+    LOG("Output: %dx%d at %d,%d, vsync %d, pixel snap %d, game window mode %d",
+        g_cfg.outW, g_cfg.outH, g_cfg.outX, g_cfg.outY, g_cfg.vsync ? 1 : 0,
+        g_cfg.pixelSnap ? 1 : 0, g_cfg.gameWindowMode);
+    LogRects("P", g_cfg.dests);
+    LogRects("S", g_cfg.sources);
+    if (g_cfg.dests.size() != g_cfg.sources.size())
+        LOG("Note: %zu layout entries but %zu source entries; drawing %zu screens",
+            g_cfg.dests.size(), g_cfg.sources.size(), g_cfg.ScreenCount());
+}
+
+std::vector<Rect> SnappedDests()
+{
+    if (!g_cfg.pixelSnap || g_cfg.outW <= 0 || g_cfg.outH <= 0) return g_cfg.dests;
 
     auto axis = [](float origin, float size, int total, float& outOrigin, float& outSize)
     {
         const double p0 = std::floor(origin * total + 0.5);
         const double p1 = std::floor((origin + size) * total + 0.5);
-        outOrigin = (p0 == 0) ? 0.0f : static_cast<float>((p0 + 0.1) / total);
-        outSize = static_cast<float>((p1 - p0 + 0.1) / total);
+        outOrigin = static_cast<float>(p0 / total);
+        outSize = static_cast<float>((p1 - p0) / total);
     };
 
     std::vector<Rect> out;
-    for (const Rect& r : g_cfg.players)
+    for (const Rect& r : g_cfg.dests)
     {
         Rect s;
-        axis(r.originX, r.sizeX, g_cfg.resW, s.originX, s.sizeX);
-        axis(r.originY, r.sizeY, g_cfg.resH, s.originY, s.sizeY);
+        axis(r.originX, r.sizeX, g_cfg.outW, s.originX, s.sizeX);
+        axis(r.originY, r.sizeY, g_cfg.outH, s.originY, s.sizeY);
         out.push_back(s);
     }
     return out;

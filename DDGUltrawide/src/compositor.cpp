@@ -146,14 +146,14 @@ float4 PSMain(VSOut i) : SV_Target
 
         HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                                     wc.lpszClassName, L"DDGUltrawide", WS_POPUP,
-                                    g_cfg.outX, g_cfg.outY, g_cfg.resW, g_cfg.resH,
+                                    g_cfg.outX, g_cfg.outY, g_cfg.outW, g_cfg.outH,
                                     nullptr, nullptr, inst, nullptr);
         if (!hwnd)
         {
             LOG("Could not create the output window (error %lu)", GetLastError());
             return 0;
         }
-        LOG("Output window %dx%d at %d,%d", g_cfg.resW, g_cfg.resH, g_cfg.outX, g_cfg.outY);
+        LOG("Output window %dx%d at %d,%d", g_cfg.outW, g_cfg.outH, g_cfg.outX, g_cfg.outY);
         TouchSetOutputWindow(hwnd);
         g_outWnd = hwnd;   // shown after the first composited frame
 
@@ -306,8 +306,8 @@ float4 PSMain(VSOut i) : SV_Target
         if (ok)
         {
             DXGI_SWAP_CHAIN_DESC sd = {};
-            sd.BufferDesc.Width = g_cfg.resW;
-            sd.BufferDesc.Height = g_cfg.resH;
+            sd.BufferDesc.Width = g_cfg.outW;
+            sd.BufferDesc.Height = g_cfg.outH;
             sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
             sd.SampleDesc.Count = 1;
             sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -443,12 +443,12 @@ float4 PSMain(VSOut i) : SV_Target
     // ---------------------------------------------------------------------
     void DrawRegions()
     {
-        const std::vector<Rect> dst = SnappedLayout();
-        const size_t n = dst.size() < g_cfg.sources.size() ? dst.size() : g_cfg.sources.size();
+        const std::vector<Rect> dst = SnappedDests();
+        const size_t n = g_cfg.ScreenCount();
 
         D3D11_VIEWPORT vp = {};
-        vp.Width = static_cast<float>(g_cfg.resW);
-        vp.Height = static_cast<float>(g_cfg.resH);
+        vp.Width = static_cast<float>(g_cfg.outW);
+        vp.Height = static_cast<float>(g_cfg.outH);
         vp.MaxDepth = 1.0f;
 
         const float black[4] = { 0, 0, 0, 1 };
@@ -538,7 +538,7 @@ float4 PSMain(VSOut i) : SV_Target
         DrawRegions();
         Restore(g_backup);
 
-        g_outChain->Present(g_cfg.outVSync ? 1 : 0, 0);
+        g_outChain->Present(g_cfg.vsync ? 1 : 0, 0);
 
         if (!g_shown)
         {
@@ -639,6 +639,6 @@ bool InstallCompositor()
         LOG("Could not hook Present; compositor disabled");
         return false;
     }
-    LOG("Compositor installed (Present at %p), %zu regions", present, g_cfg.sources.size());
+    LOG("Compositor installed (Present at %p), %zu screens", present, g_cfg.ScreenCount());
     return true;
 }

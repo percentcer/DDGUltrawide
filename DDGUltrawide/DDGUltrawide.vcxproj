@@ -85,9 +85,7 @@
     <ClCompile Include="src\proxy.cpp" />
     <ClCompile Include="src\log.cpp" />
     <ClCompile Include="src\config.cpp" />
-    <ClCompile Include="src\layout.cpp" />
     <ClCompile Include="src\cmdline.cpp" />
-    <ClCompile Include="src\uiscale.cpp" />
     <ClCompile Include="src\compositor.cpp" />
     <ClCompile Include="src\touch.cpp" />
     <!-- MinHook (download into third_party\minhook, see README) -->
@@ -99,9 +97,7 @@
   <ItemGroup>
     <ClInclude Include="src\log.h" />
     <ClInclude Include="src\config.h" />
-    <ClInclude Include="src\layout.h" />
     <ClInclude Include="src\cmdline.h" />
-    <ClInclude Include="src\uiscale.h" />
     <ClInclude Include="src\compositor.h" />
     <ClInclude Include="src\touch.h" />
     <ClInclude Include="src\proxy.h" />
