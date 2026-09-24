@@ -112,13 +112,15 @@ namespace
 void LoadConfig(const std::wstring& ini)
 {
     // Defaults: the cabinet's 2x2 frame drawn as three screens across the top
-    // and the touch panel centered below.
+    // and the touch panel centered below. The panel's bottom 256 of 1080 rows
+    // are matted off on the cabinet, so only its top 824 rows are drawn,
+    // filling the full height below the forward screens (1118x480 at 5120x1440).
     g_cfg.dests = { {1.0f / 3, 2.0f / 3, 0.0f, 0.0f},
                     {1.0f / 3, 2.0f / 3, 1.0f / 3, 0.0f},
                     {1.0f / 3, 2.0f / 3, 2.0f / 3, 0.0f},
-                    {1.0f / 6, 1.0f / 3, 5.0f / 12, 2.0f / 3} };
+                    {1118.0f / 5120, 1.0f / 3, 2001.0f / 5120, 2.0f / 3} };
     g_cfg.sources = { {0.5f, 0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f, 0.0f},
-                      {0.5f, 0.5f, 0.0f, 0.5f}, {0.5f, 0.5f, 0.5f, 0.5f} };
+                      {0.5f, 0.5f, 0.0f, 0.5f}, {0.5f, 824.0f / 2160, 0.5f, 0.5f} };
 
     if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES)
         LOG("Config not found (%ls); using defaults", ini.c_str());
