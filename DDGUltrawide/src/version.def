@@ -1,0 +1,19 @@
+LIBRARY version
+EXPORTS
+    GetFileVersionInfoA=Thunk_GetFileVersionInfoA
+    GetFileVersionInfoByHandle=Thunk_GetFileVersionInfoByHandle
+    GetFileVersionInfoExA=Thunk_GetFileVersionInfoExA
+    GetFileVersionInfoExW=Thunk_GetFileVersionInfoExW
+    GetFileVersionInfoSizeA=Thunk_GetFileVersionInfoSizeA
+    GetFileVersionInfoSizeExA=Thunk_GetFileVersionInfoSizeExA
+    GetFileVersionInfoSizeExW=Thunk_GetFileVersionInfoSizeExW
+    GetFileVersionInfoSizeW=Thunk_GetFileVersionInfoSizeW
+    GetFileVersionInfoW=Thunk_GetFileVersionInfoW
+    VerFindFileA=Thunk_VerFindFileA
+    VerFindFileW=Thunk_VerFindFileW
+    VerInstallFileA=Thunk_VerInstallFileA
+    VerInstallFileW=Thunk_VerInstallFileW
+    VerLanguageNameA=Thunk_VerLanguageNameA
+    VerLanguageNameW=Thunk_VerLanguageNameW
+    VerQueryValueA=Thunk_VerQueryValueA
+    VerQueryValueW=Thunk_VerQueryValueW
