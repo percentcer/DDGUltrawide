@@ -31,6 +31,7 @@ namespace
     bool g_shown = false;
     HWND g_gameWnd = nullptr;   // the game's window, from its swap chain
     constexpr UINT WM_APP_ATTACH = WM_APP + 1;   // wParam = game window
+    bool g_loggedSizeMismatch = false;
 
     // ---- D3D objects (only touched on the game's presenting thread) ----
     ID3D11Device* g_dev = nullptr;
@@ -525,6 +526,15 @@ float4 PSMain(VSOut i) : SV_Target
         if (FAILED(gameChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&bb)))) return;
         D3D11_TEXTURE2D_DESC desc;
         bb->GetDesc(&desc);
+
+        if (!g_loggedSizeMismatch && g_cfg.renderW > 0 && g_cfg.renderH > 0 &&
+            (desc.Width != static_cast<UINT>(g_cfg.renderW) || desc.Height != static_cast<UINT>(g_cfg.renderH)))
+        {
+            g_loggedSizeMismatch = true;
+            LOG("Game is rendering at %ux%u, not the requested %dx%d",
+                desc.Width, desc.Height, g_cfg.renderW, g_cfg.renderH);
+        }
+
         if (!EnsureSource(desc)) { SafeRelease(bb); g_failed = true; return; }
 
         if (desc.SampleDesc.Count > 1)

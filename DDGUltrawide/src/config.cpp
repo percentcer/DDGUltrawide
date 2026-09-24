@@ -143,11 +143,17 @@ void LoadConfig(const std::wstring& ini)
         if (ParseNumber(part, v)) g_cfg.touchScreens.push_back(static_cast<int>(v));
     }
 
+    g_cfg.renderW = ReadInt(ini, L"Game", L"RenderWidth", g_cfg.renderW);
+    g_cfg.renderH = ReadInt(ini, L"Game", L"RenderHeight", g_cfg.renderH);
     g_cfg.extraCommandLine = ReadString(ini, L"Game", L"ExtraCommandLine", L"");
 
     LOG("Output: %dx%d at %d,%d, vsync %d, pixel snap %d, game window mode %d",
         g_cfg.outW, g_cfg.outH, g_cfg.outX, g_cfg.outY, g_cfg.vsync ? 1 : 0,
         g_cfg.pixelSnap ? 1 : 0, g_cfg.gameWindowMode);
+    if (g_cfg.renderW > 0 && g_cfg.renderH > 0)
+        LOG("Game render size: %dx%d", g_cfg.renderW, g_cfg.renderH);
+    else
+        LOG("Game render size: left to the game");
     LogRects("P", g_cfg.dests);
     LogRects("S", g_cfg.sources);
     if (g_cfg.dests.size() != g_cfg.sources.size())

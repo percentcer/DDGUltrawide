@@ -29,6 +29,7 @@ struct Config
     bool hideCursor = false;            // hide the cursor over the output window
 
     // [Game]
+    int renderW = 3840, renderH = 2160; // size to make the game's window (0 = leave it alone)
     std::wstring extraCommandLine;      // appended to the game's command line
 
     // Number of screens that have both a destination and a source
