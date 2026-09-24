@@ -89,7 +89,6 @@
     <ClCompile Include="src\compositor.cpp" />
     <ClCompile Include="src\touch.cpp" />
     <ClCompile Include="src\gamewindow.cpp" />
-    <ClCompile Include="src\settingsfile.cpp" />
     <!-- MinHook (download into third_party\minhook, see README) -->
     <ClCompile Include="..\third_party\minhook\src\buffer.c" />
     <ClCompile Include="..\third_party\minhook\src\hook.c" />
@@ -103,7 +102,6 @@
     <ClInclude Include="src\compositor.h" />
     <ClInclude Include="src\touch.h" />
     <ClInclude Include="src\gamewindow.h" />
-    <ClInclude Include="src\settingsfile.h" />
     <ClInclude Include="src\proxy.h" />
   </ItemGroup>
   <ItemGroup>

@@ -13,6 +13,14 @@ touch panel). The DLL:
   DLL copies it and redraws the four screens into its own borderless window in
   the configured layout, with smooth (mipmapped) downscaling. The output window
   stays above the game's window and never takes focus from it.
+- **Sets the render size.** The game takes its resolution from its command
+  line, and TeknoParrot replaces that command line with its own, including
+  `-ResX=1920 -ResY=1080`. The DLL patches the game executable's import table so
+  the game's `GetCommandLineW` calls come to it first: it fetches the command
+  line (through TeknoParrot's hook), replaces the resolution and window-mode
+  options with `-ResX=3840 -ResY=2160 -windowed -ForceRes`, and keeps the rest
+  (such as `-UserDir`). Windows' limit on window size is lifted for the game's
+  window so it can be larger than the monitor.
 - **Forwards touch.** Clicks on the touch panel in the output window are mapped
   to the matching point in the game's panel and passed to the game, which treats
   mouse clicks as touches. `GetCursorPos`, `WindowFromPoint` and `SetCursorPos`
@@ -34,8 +42,8 @@ designed.
 ## Install
 
 1. Copy `version.dll` and `DDGUltrawide.ini` into `TG4AC\Binaries\Win64`.
-2. In TeknoParrot's settings for the game, set the resolution to **3840x2160**
-   and **windowed** (the game's own default).
+2. TeknoParrot's resolution and windowed settings don't matter: the DLL makes
+   the game render in a 3840x2160 window regardless (`[Game]` in the ini).
 3. Adjust `[Output]` in the ini if your monitor isn't 5120x1440 at the top-left
    of the desktop.
 
@@ -50,7 +58,8 @@ See the comments in `DDGUltrawide.ini`. In short:
 - `[Layout]` / `[Source]`: for each screen, where to draw it in the output and
   where it is in the game's frame, as fractions (e.g. `1/3`).
 - `[Touch]`: which screens accept clicks, and whether to hide the cursor.
-- `[Game]`: extra command line options, only for launching the exe directly.
+- `[Game]`: the size the game renders at (3840x2160, the cabinet's), and extra
+  command line options.
 
 ## Uninstall
 

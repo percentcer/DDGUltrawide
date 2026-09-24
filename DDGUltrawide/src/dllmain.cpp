@@ -6,11 +6,9 @@
 //   - compositor.cpp: lets the game render its stock 3840x2160 2x2 frame, and
 //     redraws the four screens into its own window in the configured layout
 //   - touch.cpp:      forwards clicks on the output window back to the game
-//   - settingsfile.cpp: makes the game start at the cabinet's 3840x2160, even
-//                     if a launcher wrote another resolution into its settings
 //   - gamewindow.cpp: lets the game's window be larger than the screen
-//   - cmdline.cpp:    edits the game's command line (render size, extra options),
-//                     even if a launcher replaces it
+//   - cmdline.cpp:    edits the game's command line so it renders at the
+//                     cabinet's 3840x2160, even if a launcher replaces it
 
 #include "cmdline.h"
 #include "compositor.h"
@@ -18,7 +16,6 @@
 #include "gamewindow.h"
 #include "log.h"
 #include "proxy.h"
-#include "settingsfile.h"
 #include "touch.h"
 
 #include <windows.h>
@@ -67,13 +64,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         return TRUE;
     }
 
-    // These have to be in place before the game's startup code reads its settings
-    // and command line or creates its window, so they're installed right here.
+    // These have to be in place before the game's startup code reads its command
+    // line or creates its window, so they're installed right here.
     if (g_cfg.renderW > 0 && g_cfg.renderH > 0)
-    {
-        InstallSettingsFileHook(g_cfg.renderW, g_cfg.renderH);
         InstallGameWindowHook();
-    }
     InstallCommandLineHook(g_cfg.renderW, g_cfg.renderH, g_cfg.extraCommandLine);
 
     // The remaining hooks go on a separate thread to keep work under the loader lock small.
