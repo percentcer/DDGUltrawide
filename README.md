@@ -1,4 +1,4 @@
-<img width="5119" height="1439" alt="image" src="https://github.com/user-attachments/assets/e4c6f8de-7bcb-40f5-bc7a-6ed474fbbbcc" />
+<img width="5120" height="1440" alt="image" src="https://github.com/user-attachments/assets/dcb4fdd9-2ce2-49e0-9524-3973b2026ac7" />
 
 # DDGUltrawide
 
