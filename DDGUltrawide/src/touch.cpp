@@ -22,6 +22,7 @@ namespace
     std::atomic<bool> g_remapping{ false };
 
     bool g_loggedFirstClick = false;
+    bool g_loggedFirstWheel = false;
 
     using GetCursorPosFn = BOOL(WINAPI*)(LPPOINT);
     using WindowFromPointFn = HWND(WINAPI*)(POINT);
@@ -78,6 +79,39 @@ namespace
             return true;
         }
         return false;
+    }
+
+    // Output client point -> game client point for any screen (touchable or not),
+    // falling back to the middle of the center screen when the point isn't on a
+    // screen. Used for the mouse wheel, which works anywhere in the game.
+    bool MapWheelPoint(int window, int ox, int oy, POINT& game)
+    {
+        HWND gw = g_game.load();
+        HWND ow = window >= 0 ? g_out[window].load() : nullptr;
+        RECT gc, oc;
+        if (!gw || !ow || !GetClientRect(gw, &gc) || !GetClientRect(ow, &oc)) return false;
+        if (gc.right <= 0 || gc.bottom <= 0 || oc.right <= 0 || oc.bottom <= 0) return false;
+
+        const float fx = (ox + 0.5f) / oc.right;
+        const float fy = (oy + 0.5f) / oc.bottom;
+        const std::vector<Placement> placements = Placements(window, oc.right, oc.bottom);
+        for (const Placement& p : placements)
+        {
+            const float u = (fx - p.dest.originX) / p.dest.sizeX;
+            const float v = (fy - p.dest.originY) / p.dest.sizeY;
+            if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
+            game.x = static_cast<LONG>((p.source.originX + u * p.source.sizeX) * gc.right);
+            game.y = static_cast<LONG>((p.source.originY + v * p.source.sizeY) * gc.bottom);
+            return true;
+        }
+
+        // Not over a screen: use the center screen's source (the top-right quadrant by default)
+        Rect s = { 0.5f, 0.5f, 0.5f, 0.0f };
+        for (const Placement& p : Placements(kMainWindow, oc.right, oc.bottom))
+            if (p.screen == 1) s = p.source;
+        game.x = static_cast<LONG>((s.originX + s.sizeX / 2) * gc.right);
+        game.y = static_cast<LONG>((s.originY + s.sizeY / 2) * gc.bottom);
+        return true;
     }
 
     // Which of our windows a screen point is over, and the point in its client area.
@@ -277,6 +311,28 @@ bool TouchHandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT& resu
         g_captureRegion.store(-1);
         g_captureWindow.store(-1);
         return false;
+    }
+    if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
+    {
+        // Windows sends the wheel to the window under the cursor, which is always
+        // ours, so pass it on to the game (it drives the throttle and brake).
+        // Wheel messages carry screen coordinates.
+        HWND gw = g_game.load();
+        const int window = WindowIndex(hwnd);
+        if (!gw || window < 0) return false;
+
+        POINT c = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        POINT g;
+        if (!ScreenToClient(hwnd, &c) || !MapWheelPoint(window, c.x, c.y, g) || !ClientToScreen(gw, &g))
+            return false;
+        PostMessageW(gw, msg, wp, MAKELPARAM(static_cast<WORD>(g.x), static_cast<WORD>(g.y)));
+        if (!g_loggedFirstWheel)
+        {
+            g_loggedFirstWheel = true;
+            LOG("First mouse wheel: window %d at %ld,%ld -> game screen %ld,%ld", window, c.x, c.y, g.x, g.y);
+        }
+        result = 0;
+        return true;
     }
     if (!g_cfg.touchEnabled || !IsMouseMessage(msg)) return false;
 

@@ -20,7 +20,8 @@ touch panel). The DLL:
 - **Forwards touch.** Clicks on the touch panel in the output window are mapped
   to the matching point in the game's panel and passed to the game, which treats
   mouse clicks as touches. `GetCursorPos`, `WindowFromPoint` and `SetCursorPos`
-  are hooked so the game sees the cursor where it expects it.
+  are hooked so the game sees the cursor where it expects it. Mouse wheel input
+  (throttle and brake) over any of the DLL's windows is passed to the game too.
 
 ## Build
 
