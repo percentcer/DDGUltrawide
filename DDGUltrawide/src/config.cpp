@@ -143,7 +143,7 @@ void LoadConfig(const std::wstring& ini)
     g_cfg.pixelSnap = ReadInt(ini, L"Output", L"PixelSnap", 1) != 0;
     g_cfg.gameWindowMode = ReadInt(ini, L"Output", L"GameWindow", 0);
 
-    g_cfg.arcadeLayout = ReadInt(ini, L"Layout", L"ArcadeLayout", 0) != 0;
+    g_cfg.arcadeLayout = ReadInt(ini, L"Layout", L"ArcadeLayout", 1) != 0;
     float gap;
     if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeGap", L""), gap)) g_cfg.arcadeGap = gap;
     ReadRects(ini, L"Layout", L"P", g_cfg.dests);

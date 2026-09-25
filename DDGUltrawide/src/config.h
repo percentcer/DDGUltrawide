@@ -21,7 +21,7 @@ struct Config
     std::vector<Rect> dests;
     // [Layout] ArcadeLayout: compute the layout from the cabinet's screen sizes
     // instead (ignores P0.. and [Source])
-    bool arcadeLayout = false;
+    bool arcadeLayout = true;
     float arcadeGap = 2.0f;             // gap between the forward screens, in cabinet inches
 
     // [Source] S0..: where each screen is in the game's own frame
