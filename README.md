@@ -7,7 +7,7 @@ cabinet's four screens on a single ultrawide monitor.
 
 ## How it works
 
-The game runs completely unmodified, rendering the same 3840x2160 frame as the
+The game runs unmodified, rendering the same 3840x2160 frame as the
 cabinet: four 1920x1080 screens in a 2x2 grid (three forward windows and the
 touch panel). The DLL:
 
@@ -34,10 +34,9 @@ touch panel). The DLL:
 1. Copy `version.dll` and `DDGUltrawide.ini` into `<densha 5.80.02 root>\TG4AC\Binaries\Win64`.
 2. TeknoParrot's resolution and windowed settings don't matter: the DLL makes
    the game render in a 3840x2160 window regardless (`[Game]` in the ini).
-3. Adjust `[Output]` in the ini if your monitor isn't 5120x1440 at the top-left
-   of the desktop.
+3. Adjust `[Output]` in the ini if your monitor isn't 5120x1440.
 
-A log is written to `DDGUltrawide.log` next to the DLL.
+A log is written to `DDGUltrawide.log` next to the DLL to help with troubleshooting.
 
 ## Configuration
 
