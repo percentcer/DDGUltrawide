@@ -46,7 +46,16 @@ See the comments in `DDGUltrawide.ini`. In short:
   how to keep the game's own window out of sight.
 - `[Layout]` / `[Source]`: for each screen, where to draw it in the output and
   where it is in the game's frame, as fractions (e.g. `1/3`).
+- `[TouchPanelWindow]`: shows the touch panel full screen on a separate monitor
+  (e.g. a touchscreen) instead of in the main output. Pick the monitor by the
+  number Windows shows for it, or place the window explicitly.
 - `[Touch]`: which screens accept clicks, and whether to hide the cursor.
+
+### Using a separate touchscreen
+
+Set `Enabled=1` under `[TouchPanelWindow]`. If taps on the touchscreen move the
+cursor on the wrong monitor, tell Windows which display the touchscreen belongs
+to: Control Panel -> Tablet PC Settings -> Setup -> Touch input.
 - `[Game]`: the size the game renders at (3840x2160, the cabinet's), and extra
   command line options.
 

@@ -23,6 +23,16 @@ struct Config
     // [Source] S0..: where each screen is in the game's own frame
     std::vector<Rect> sources;
 
+    // [TouchPanelWindow] optional second window, full screen on its own monitor,
+    // that shows the touch panel (screen 3) instead of the main output
+    bool panelWindow = false;
+    int panelMonitor = 0;               // Windows display number; 0 = first one not showing the main output
+    int panelX = 0, panelY = 0;         // explicit placement, used when panelW and panelH > 0
+    int panelW = 0, panelH = 0;
+    bool panelVsync = false;            // off so the two windows don't wait on each other
+    Rect panelDest{ 1.0f, 1.0f, 0.0f, 0.0f };      // where the panel is drawn in its window
+    Rect panelSource{ 0.5f, 0.5f, 0.5f, 0.5f };    // where the panel is in the game's frame
+
     // [Touch]
     bool touchEnabled = true;
     std::vector<int> touchScreens{ 3 }; // which screens accept clicks (index into Layout/Source)
@@ -41,6 +51,20 @@ extern Config g_cfg;
 // Loads the ini; missing values keep their defaults (the 3+1 layout at 5120x1440).
 void LoadConfig(const std::wstring& iniPath);
 
-// Destination rects with edges snapped to whole output pixels (when PixelSnap
-// is on), so neighboring screens share an exact pixel boundary.
-std::vector<Rect> SnappedDests();
+// The screen that is the touch panel (bottom-right of the cabinet's 2x2 frame).
+constexpr int kTouchPanelScreen = 3;
+
+// Our output windows.
+enum OutputWindow { kMainWindow = 0, kPanelWindow = 1, kWindowCount = 2 };
+
+// One screen drawn into one of our windows.
+struct Placement
+{
+    int screen;     // index into [Layout]/[Source]
+    Rect dest;      // fractions of the window, edges snapped to whole pixels when PixelSnap is on
+    Rect source;    // fractions of the game's frame
+};
+
+// The screens drawn into a window of the given client size. With the touch
+// panel window enabled, screen 3 moves from the main window to that window.
+std::vector<Placement> Placements(int window, int width, int height);

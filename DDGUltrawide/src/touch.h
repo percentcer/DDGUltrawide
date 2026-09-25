@@ -7,7 +7,8 @@
 // so the game sees the cursor at that point.
 bool InstallTouchHooks();
 
-void TouchSetOutputWindow(HWND out);
+// window: kMainWindow or kPanelWindow (config.h)
+void TouchSetOutputWindow(int window, HWND out);
 void TouchSetGameWindow(HWND game);
 
 // Called from the output window's WndProc. Returns true if the message was handled.

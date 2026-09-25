@@ -5,6 +5,7 @@
 // proxy_thunks.asm), then:
 //   - compositor.cpp: lets the game render its stock 3840x2160 2x2 frame, and
 //     redraws the four screens into its own window in the configured layout
+//     (optionally with the touch panel in a second window on its own monitor)
 //   - touch.cpp:      forwards clicks on the output window back to the game
 //   - gamewindow.cpp: lets the game's window be larger than the screen
 //   - cmdline.cpp:    edits the game's command line so it renders at the

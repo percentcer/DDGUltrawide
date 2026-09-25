@@ -77,6 +77,16 @@ namespace
         return true;
     }
 
+    // Reads a single rect; keeps the default if the key is missing or malformed.
+    void ReadRect(const std::wstring& ini, const wchar_t* section, const wchar_t* key, Rect& target)
+    {
+        const std::wstring val = ReadString(ini, section, key, L"");
+        if (val.empty()) return;
+        Rect r;
+        if (ParseRect(val, r)) target = r;
+        else LOG("Bad [%ls] %ls: %ls (using the default)", section, key, val.c_str());
+    }
+
     // Reads Prefix0, Prefix1, ... until the first missing key. Keeps the defaults
     // if the section has no entries or any entry is malformed.
     void ReadRects(const std::wstring& ini, const wchar_t* section, const wchar_t* prefix, std::vector<Rect>& target)
@@ -136,6 +146,16 @@ void LoadConfig(const std::wstring& ini)
     ReadRects(ini, L"Layout", L"P", g_cfg.dests);
     ReadRects(ini, L"Source", L"S", g_cfg.sources);
 
+    g_cfg.panelWindow = ReadInt(ini, L"TouchPanelWindow", L"Enabled", 0) != 0;
+    g_cfg.panelMonitor = ReadInt(ini, L"TouchPanelWindow", L"Monitor", g_cfg.panelMonitor);
+    g_cfg.panelX = ReadInt(ini, L"TouchPanelWindow", L"X", g_cfg.panelX);
+    g_cfg.panelY = ReadInt(ini, L"TouchPanelWindow", L"Y", g_cfg.panelY);
+    g_cfg.panelW = ReadInt(ini, L"TouchPanelWindow", L"Width", g_cfg.panelW);
+    g_cfg.panelH = ReadInt(ini, L"TouchPanelWindow", L"Height", g_cfg.panelH);
+    g_cfg.panelVsync = ReadInt(ini, L"TouchPanelWindow", L"VSync", 0) != 0;
+    ReadRect(ini, L"TouchPanelWindow", L"Layout", g_cfg.panelDest);
+    ReadRect(ini, L"TouchPanelWindow", L"Source", g_cfg.panelSource);
+
     g_cfg.touchEnabled = ReadInt(ini, L"Touch", L"Enabled", 1) != 0;
     g_cfg.hideCursor = ReadInt(ini, L"Touch", L"HideCursor", 0) != 0;
     g_cfg.touchScreens.clear();
@@ -161,27 +181,51 @@ void LoadConfig(const std::wstring& ini)
     if (g_cfg.dests.size() != g_cfg.sources.size())
         LOG("Note: %zu layout entries but %zu source entries; drawing %zu screens",
             g_cfg.dests.size(), g_cfg.sources.size(), g_cfg.ScreenCount());
+    if (g_cfg.panelWindow)
+    {
+        if (g_cfg.panelW > 0 && g_cfg.panelH > 0)
+            LOG("Touch panel window: %dx%d at %d,%d, vsync %d", g_cfg.panelW, g_cfg.panelH,
+                g_cfg.panelX, g_cfg.panelY, g_cfg.panelVsync ? 1 : 0);
+        else
+            LOG("Touch panel window: monitor %d%s, vsync %d", g_cfg.panelMonitor,
+                g_cfg.panelMonitor == 0 ? " (auto)" : "", g_cfg.panelVsync ? 1 : 0);
+        const Rect& d = g_cfg.panelDest;
+        const Rect& s = g_cfg.panelSource;
+        LOG("  Layout: size %.4f x %.4f, origin %.4f, %.4f", d.sizeX, d.sizeY, d.originX, d.originY);
+        LOG("  Source: size %.4f x %.4f, origin %.4f, %.4f", s.sizeX, s.sizeY, s.originX, s.originY);
+    }
 }
 
-std::vector<Rect> SnappedDests()
+std::vector<Placement> Placements(int window, int width, int height)
 {
-    if (!g_cfg.pixelSnap || g_cfg.outW <= 0 || g_cfg.outH <= 0) return g_cfg.dests;
-
-    auto axis = [](float origin, float size, int total, float& outOrigin, float& outSize)
+    auto snap = [&](const Rect& r)
     {
-        const double p0 = std::floor(origin * total + 0.5);
-        const double p1 = std::floor((origin + size) * total + 0.5);
-        outOrigin = static_cast<float>(p0 / total);
-        outSize = static_cast<float>((p1 - p0) / total);
+        if (!g_cfg.pixelSnap || width <= 0 || height <= 0) return r;
+        auto axis = [](float origin, float size, int total, float& outOrigin, float& outSize)
+        {
+            const double p0 = std::floor(origin * total + 0.5);
+            const double p1 = std::floor((origin + size) * total + 0.5);
+            outOrigin = static_cast<float>(p0 / total);
+            outSize = static_cast<float>((p1 - p0) / total);
+        };
+        Rect s;
+        axis(r.originX, r.sizeX, width, s.originX, s.sizeX);
+        axis(r.originY, r.sizeY, height, s.originY, s.sizeY);
+        return s;
     };
 
-    std::vector<Rect> out;
-    for (const Rect& r : g_cfg.dests)
+    std::vector<Placement> out;
+    if (window == kPanelWindow)
     {
-        Rect s;
-        axis(r.originX, r.sizeX, g_cfg.outW, s.originX, s.sizeX);
-        axis(r.originY, r.sizeY, g_cfg.outH, s.originY, s.sizeY);
-        out.push_back(s);
+        if (g_cfg.panelWindow)
+            out.push_back({ kTouchPanelScreen, snap(g_cfg.panelDest), g_cfg.panelSource });
+        return out;
+    }
+    for (size_t i = 0; i < g_cfg.ScreenCount(); ++i)
+    {
+        const int screen = static_cast<int>(i);
+        if (g_cfg.panelWindow && screen == kTouchPanelScreen) continue;
+        out.push_back({ screen, snap(g_cfg.dests[i]), g_cfg.sources[i] });
     }
     return out;
 }

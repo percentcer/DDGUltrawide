@@ -10,12 +10,13 @@
 
 namespace
 {
-    std::atomic<HWND> g_out{ nullptr };
+    std::atomic<HWND> g_out[kWindowCount];
     std::atomic<HWND> g_game{ nullptr };
 
-    // Region captured by the current press (-1 = none). Presses stay mapped to
-    // the region they started in until released.
+    // Screen and window captured by the current press (-1 = none). Presses stay
+    // mapped to the screen they started on until released.
     std::atomic<int> g_captureRegion{ -1 };
+    std::atomic<int> g_captureWindow{ -1 };
 
     // True while the real cursor is over the output window and being remapped.
     std::atomic<bool> g_remapping{ false };
@@ -37,59 +38,94 @@ namespace
         return false;
     }
 
-    // Output client point -> game client point.
-    // forceRegion >= 0 clamps the point into that region (used during a press).
-    bool MapClientPoint(int ox, int oy, int forceRegion, POINT& game, int& regionOut)
+    int WindowIndex(HWND hwnd)
+    {
+        for (int w = 0; w < kWindowCount; ++w)
+            if (hwnd && g_out[w].load() == hwnd) return w;
+        return -1;
+    }
+
+    // Output client point (in one of our windows) -> game client point.
+    // forceRegion >= 0 clamps the point into that screen (used during a press).
+    bool MapClientPoint(int window, int ox, int oy, int forceRegion, POINT& game, int& regionOut)
     {
         HWND gw = g_game.load();
-        if (!gw || g_cfg.outW <= 0 || g_cfg.outH <= 0) return false;
+        HWND ow = window >= 0 ? g_out[window].load() : nullptr;
+        if (!gw || !ow) return false;
 
-        RECT gc;
+        RECT gc, oc;
         if (!GetClientRect(gw, &gc) || gc.right <= 0 || gc.bottom <= 0) return false;
+        if (!GetClientRect(ow, &oc) || oc.right <= 0 || oc.bottom <= 0) return false;
 
-        const std::vector<Rect> dst = SnappedDests();
-        const size_t n = g_cfg.ScreenCount();
-        const float fx = (ox + 0.5f) / g_cfg.outW;
-        const float fy = (oy + 0.5f) / g_cfg.outH;
+        const float fx = (ox + 0.5f) / oc.right;
+        const float fy = (oy + 0.5f) / oc.bottom;
 
-        for (size_t i = 0; i < n; ++i)
+        for (const Placement& p : Placements(window, oc.right, oc.bottom))
         {
-            const int idx = static_cast<int>(i);
-            if (forceRegion >= 0 ? idx != forceRegion : !IsTouchRegion(idx)) continue;
+            if (forceRegion >= 0 ? p.screen != forceRegion : !IsTouchRegion(p.screen)) continue;
 
-            const Rect& d = dst[i];
+            const Rect& d = p.dest;
             float u = (fx - d.originX) / d.sizeX;
             float v = (fy - d.originY) / d.sizeY;
             if (forceRegion < 0 && (u < 0 || u >= 1 || v < 0 || v >= 1)) continue;
             u = u < 0 ? 0 : (u > 0.9999f ? 0.9999f : u);
             v = v < 0 ? 0 : (v > 0.9999f ? 0.9999f : v);
 
-            const Rect& s = g_cfg.sources[i];
+            const Rect& s = p.source;
             game.x = static_cast<LONG>((s.originX + u * s.sizeX) * gc.right);
             game.y = static_cast<LONG>((s.originY + v * s.sizeY) * gc.bottom);
-            regionOut = idx;
+            regionOut = p.screen;
             return true;
         }
         return false;
     }
 
-    // Real screen point -> screen point inside the game window, if it's over the output.
+    // Which of our windows a screen point is over, and the point in its client area.
+    int WindowAtScreenPoint(const POINT& screen, POINT& client)
+    {
+        for (int w = 0; w < kWindowCount; ++w)
+        {
+            HWND ow = g_out[w].load();
+            RECT oc;
+            if (!ow || !IsWindowVisible(ow) || !GetClientRect(ow, &oc)) continue;
+            POINT c = screen;
+            if (!ScreenToClient(ow, &c)) continue;
+            if (c.x >= 0 && c.y >= 0 && c.x < oc.right && c.y < oc.bottom)
+            {
+                client = c;
+                return w;
+            }
+        }
+        return -1;
+    }
+
+    // Real screen point -> screen point inside the game window, if it's over one of our windows.
     bool MapScreenPoint(const POINT& screen, POINT& mapped)
     {
-        HWND ow = g_out.load();
         HWND gw = g_game.load();
-        if (!ow || !gw) return false;
-
-        POINT c = screen;
-        if (!ScreenToClient(ow, &c)) return false;
+        if (!gw) return false;
 
         const int capture = g_captureRegion.load();
-        const bool inside = c.x >= 0 && c.y >= 0 && c.x < g_cfg.outW && c.y < g_cfg.outH;
-        if (!inside && capture < 0) return false;
+        const int captureWindow = g_captureWindow.load();
+        POINT c;
+        int window;
+        if (capture >= 0 && captureWindow >= 0)
+        {
+            // A press keeps mapping through the window it started in, even past its edge.
+            window = captureWindow;
+            HWND ow = g_out[window].load();
+            c = screen;
+            if (!ow || !ScreenToClient(ow, &c)) return false;
+        }
+        else
+        {
+            window = WindowAtScreenPoint(screen, c);
+            if (window < 0) return false;
+        }
 
         POINT g;
         int region;
-        if (!MapClientPoint(c.x, c.y, capture, g, region))
+        if (!MapClientPoint(window, c.x, c.y, capture, g, region))
         {
             // Over the output but not over a touch region: park the game's cursor
             // just outside its client area so nothing in the game reacts.
@@ -106,9 +142,8 @@ namespace
     // touch region (can't be shown), -1 if it isn't in the game window at all.
     int UnmapScreenPoint(int x, int y, POINT& out)
     {
-        HWND ow = g_out.load();
         HWND gw = g_game.load();
-        if (!ow || !gw) return -1;
+        if (!gw) return -1;
 
         POINT g = { x, y };
         RECT gc;
@@ -117,23 +152,28 @@ namespace
 
         const float fx = (g.x + 0.5f) / gc.right;
         const float fy = (g.y + 0.5f) / gc.bottom;
-        const std::vector<Rect> dst = SnappedDests();
-        const size_t n = g_cfg.ScreenCount();
 
-        for (size_t i = 0; i < n; ++i)
+        for (int w = 0; w < kWindowCount; ++w)
         {
-            if (!IsTouchRegion(static_cast<int>(i))) continue;
-            const Rect& s = g_cfg.sources[i];
-            const float u = (fx - s.originX) / s.sizeX;
-            const float v = (fy - s.originY) / s.sizeY;
-            if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
+            HWND ow = g_out[w].load();
+            RECT oc;
+            if (!ow || !GetClientRect(ow, &oc) || oc.right <= 0 || oc.bottom <= 0) continue;
 
-            const Rect& d = dst[i];
-            POINT o = { static_cast<LONG>((d.originX + u * d.sizeX) * g_cfg.outW),
-                        static_cast<LONG>((d.originY + v * d.sizeY) * g_cfg.outH) };
-            if (!ClientToScreen(ow, &o)) return -1;
-            out = o;
-            return 1;
+            for (const Placement& p : Placements(w, oc.right, oc.bottom))
+            {
+                if (!IsTouchRegion(p.screen)) continue;
+                const Rect& s = p.source;
+                const float u = (fx - s.originX) / s.sizeX;
+                const float v = (fy - s.originY) / s.sizeY;
+                if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
+
+                const Rect& d = p.dest;
+                POINT o = { static_cast<LONG>((d.originX + u * d.sizeX) * oc.right),
+                            static_cast<LONG>((d.originY + v * d.sizeY) * oc.bottom) };
+                if (!ClientToScreen(ow, &o)) return -1;
+                out = o;
+                return 1;
+            }
         }
         return 0;
     }
@@ -218,7 +258,10 @@ bool InstallTouchHooks()
     return ok;
 }
 
-void TouchSetOutputWindow(HWND out) { g_out.store(out); }
+void TouchSetOutputWindow(int window, HWND out)
+{
+    if (window >= 0 && window < kWindowCount) g_out[window].store(out);
+}
 void TouchSetGameWindow(HWND game) { g_game.store(game); }
 
 bool TouchHandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT& result)
@@ -232,12 +275,14 @@ bool TouchHandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT& resu
     if (msg == WM_CAPTURECHANGED)
     {
         g_captureRegion.store(-1);
+        g_captureWindow.store(-1);
         return false;
     }
     if (!g_cfg.touchEnabled || !IsMouseMessage(msg)) return false;
 
     HWND gw = g_game.load();
-    if (!gw) return false;
+    const int window = WindowIndex(hwnd);
+    if (!gw || window < 0) return false;
 
     const int ox = GET_X_LPARAM(lp);
     const int oy = GET_Y_LPARAM(lp);
@@ -245,7 +290,7 @@ bool TouchHandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT& resu
 
     POINT g;
     int region;
-    const bool mapped = MapClientPoint(ox, oy, capture, g, region);
+    const bool mapped = MapClientPoint(window, ox, oy, capture, g, region);
 
     if (IsButtonDown(msg))
     {
@@ -253,12 +298,14 @@ bool TouchHandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT& resu
         if (capture < 0)
         {
             g_captureRegion.store(region);
+            g_captureWindow.store(window);
             SetCapture(hwnd);
         }
         if (!g_loggedFirstClick)
         {
             g_loggedFirstClick = true;
-            LOG("First click: output %d,%d -> region %d, game client %ld,%ld", ox, oy, region, g.x, g.y);
+            LOG("First click: window %d at %d,%d -> region %d, game client %ld,%ld",
+                window, ox, oy, region, g.x, g.y);
         }
     }
 
@@ -268,6 +315,7 @@ bool TouchHandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT& resu
     if (IsButtonUp(msg) && capture >= 0 && (wp & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) == 0)
     {
         g_captureRegion.store(-1);
+        g_captureWindow.store(-1);
         ReleaseCapture();
     }
     result = 0;

@@ -10,6 +10,8 @@
 #include <MinHook.h>
 #include <atomic>
 #include <cstring>
+#include <cwchar>
+#include <vector>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -26,9 +28,23 @@ namespace
     using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
     PresentFn g_origPresent = nullptr;
 
-    // ---- Output window (created and pumped on its own thread) ----
-    std::atomic<HWND> g_outWnd{ nullptr };
-    bool g_shown = false;
+    // ---- Output windows: the main output, plus the optional touch panel window ----
+    struct Output
+    {
+        const char* name = "";
+        int x = 0, y = 0, w = 0, h = 0;
+        bool vsync = true;
+        std::atomic<HWND> hwnd{ nullptr };   // created and pumped on the window thread
+        std::atomic<bool> ready{ false };    // window thread finished (hwnd may still be null)
+
+        // Only touched on the game's presenting thread
+        IDXGISwapChain* chain = nullptr;
+        ID3D11RenderTargetView* rtv = nullptr;
+        bool shown = false;
+        bool failed = false;
+    };
+    Output g_outs[kWindowCount];
+
     HWND g_gameWnd = nullptr;   // the game's window, from its swap chain
     constexpr UINT WM_APP_ATTACH = WM_APP + 1;   // wParam = game window
     bool g_loggedSizeMismatch = false;
@@ -36,8 +52,6 @@ namespace
     // ---- D3D objects (only touched on the game's presenting thread) ----
     ID3D11Device* g_dev = nullptr;
     ID3D11DeviceContext* g_ctx = nullptr;
-    IDXGISwapChain* g_outChain = nullptr;
-    ID3D11RenderTargetView* g_outRTV = nullptr;
     ID3D11Texture2D* g_srcTex = nullptr;
     ID3D11ShaderResourceView* g_srcSRV = nullptr;
     bool g_srcMips = false;
@@ -94,8 +108,15 @@ float4 PSMain(VSOut i) : SV_Target
 )";
 
     // ---------------------------------------------------------------------
-    // Output window
+    // Output windows
     // ---------------------------------------------------------------------
+    const char* OutputName(HWND hwnd)
+    {
+        for (const Output& o : g_outs)
+            if (o.hwnd.load() == hwnd) return o.name;
+        return "Output";
+    }
+
     LRESULT CALLBACK OutWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
         LRESULT touchResult = 0;
@@ -118,9 +139,9 @@ float4 PSMain(VSOut i) : SV_Target
                 // Owned windows always stay above their owner in the z-order.
                 SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(game));
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                LOG("Output window now owned by the game window %p", game);
+                LOG("%s window now owned by the game window %p", OutputName(hwnd), game);
             }
-            else
+            else if (hwnd == g_outs[kMainWindow].hwnd.load())
             {
                 // Move the game window completely off the desktop.
                 SetWindowPos(game, nullptr, -32000, -32000, 0, 0,
@@ -131,6 +152,69 @@ float4 PSMain(VSOut i) : SV_Target
         }
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+
+    BOOL CALLBACK CollectMonitor(HMONITOR mon, HDC, LPRECT, LPARAM lp)
+    {
+        MONITORINFOEXW mi = {};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(mon, &mi))
+            reinterpret_cast<std::vector<MONITORINFOEXW>*>(lp)->push_back(mi);
+        return TRUE;
+    }
+
+    // "\\.\DISPLAY2" -> 2, the number Windows shows in its display settings.
+    int DisplayNumber(const wchar_t* device)
+    {
+        const wchar_t* p = wcsstr(device, L"DISPLAY");
+        return p ? _wtoi(p + 7) : 0;
+    }
+
+    // Where the touch panel window goes: the explicit rect from the ini, or the
+    // whole of the chosen monitor.
+    bool ResolvePanelRect(RECT& r)
+    {
+        if (g_cfg.panelW > 0 && g_cfg.panelH > 0)
+        {
+            r = { g_cfg.panelX, g_cfg.panelY, g_cfg.panelX + g_cfg.panelW, g_cfg.panelY + g_cfg.panelH };
+            return true;
+        }
+
+        std::vector<MONITORINFOEXW> mons;
+        EnumDisplayMonitors(nullptr, nullptr, CollectMonitor, reinterpret_cast<LPARAM>(&mons));
+        for (const MONITORINFOEXW& m : mons)
+        {
+            const RECT& mr = m.rcMonitor;
+            LOG("Monitor %d: %ldx%ld at %ld,%ld%s", DisplayNumber(m.szDevice), mr.right - mr.left,
+                mr.bottom - mr.top, mr.left, mr.top, (m.dwFlags & MONITORINFOF_PRIMARY) ? " (primary)" : "");
+        }
+
+        const POINT mainCenter = { g_cfg.outX + g_cfg.outW / 2, g_cfg.outY + g_cfg.outH / 2 };
+        for (const MONITORINFOEXW& m : mons)
+        {
+            const bool match = g_cfg.panelMonitor > 0
+                ? DisplayNumber(m.szDevice) == g_cfg.panelMonitor
+                : !PtInRect(&m.rcMonitor, mainCenter);
+            if (match) { r = m.rcMonitor; return true; }
+        }
+
+        if (g_cfg.panelMonitor > 0)
+            LOG("Monitor %d not found; touch panel window disabled", g_cfg.panelMonitor);
+        else
+            LOG("No monitor other than the main output's found; touch panel window disabled");
+        return false;
+    }
+
+    HWND CreateOutputWindow(Output& o, const wchar_t* className, const wchar_t* title)
+    {
+        HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                                    className, title, WS_POPUP, o.x, o.y, o.w, o.h,
+                                    nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (hwnd)
+            LOG("%s window %dx%d at %d,%d", o.name, o.w, o.h, o.x, o.y);
+        else
+            LOG("Could not create the %s window (error %lu)", o.name, GetLastError());
+        return hwnd;
     }
 
     DWORD WINAPI WindowThread(LPVOID)
@@ -145,18 +229,28 @@ float4 PSMain(VSOut i) : SV_Target
         wc.lpszClassName = L"DDGUltrawideOutput";
         RegisterClassExW(&wc);
 
-        HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-                                    wc.lpszClassName, L"DDGUltrawide", WS_POPUP,
-                                    g_cfg.outX, g_cfg.outY, g_cfg.outW, g_cfg.outH,
-                                    nullptr, nullptr, inst, nullptr);
-        if (!hwnd)
+        // Windows are shown after their first composited frame.
+        Output& main = g_outs[kMainWindow];
+        HWND hwnd = CreateOutputWindow(main, wc.lpszClassName, L"DDGUltrawide");
+        TouchSetOutputWindow(kMainWindow, hwnd);
+        main.hwnd = hwnd;
+        main.ready = true;
+
+        Output& panel = g_outs[kPanelWindow];
+        RECT pr;
+        if (g_cfg.panelWindow && ResolvePanelRect(pr))
         {
-            LOG("Could not create the output window (error %lu)", GetLastError());
-            return 0;
+            panel.x = pr.left;
+            panel.y = pr.top;
+            panel.w = pr.right - pr.left;
+            panel.h = pr.bottom - pr.top;
+            HWND ph = CreateOutputWindow(panel, wc.lpszClassName, L"DDGUltrawide Touch Panel");
+            TouchSetOutputWindow(kPanelWindow, ph);
+            panel.hwnd = ph;
         }
-        LOG("Output window %dx%d at %d,%d", g_cfg.outW, g_cfg.outH, g_cfg.outX, g_cfg.outY);
-        TouchSetOutputWindow(hwnd);
-        g_outWnd = hwnd;   // shown after the first composited frame
+        panel.ready = true;
+
+        if (!hwnd && !panel.hwnd.load()) return 0;
 
         MSG msg;
         while (GetMessageW(&msg, nullptr, 0, 0) > 0)
@@ -292,10 +386,10 @@ float4 PSMain(VSOut i) : SV_Target
         return true;
     }
 
-    bool EnsureOutput()
+    bool EnsureOutput(Output& o)
     {
-        if (g_outChain) return true;
-        HWND hwnd = g_outWnd.load();
+        if (o.chain) return true;
+        HWND hwnd = o.hwnd.load();
         if (!hwnd) return false;
 
         IDXGIDevice* dxgiDev = nullptr;
@@ -307,8 +401,8 @@ float4 PSMain(VSOut i) : SV_Target
         if (ok)
         {
             DXGI_SWAP_CHAIN_DESC sd = {};
-            sd.BufferDesc.Width = g_cfg.outW;
-            sd.BufferDesc.Height = g_cfg.outH;
+            sd.BufferDesc.Width = o.w;
+            sd.BufferDesc.Height = o.h;
             sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
             sd.SampleDesc.Count = 1;
             sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -317,30 +411,31 @@ float4 PSMain(VSOut i) : SV_Target
 
             sd.BufferCount = 2;
             sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-            if (FAILED(factory->CreateSwapChain(g_dev, &sd, &g_outChain)))
+            if (FAILED(factory->CreateSwapChain(g_dev, &sd, &o.chain)))
             {
                 sd.BufferCount = 1;
                 sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-                if (FAILED(factory->CreateSwapChain(g_dev, &sd, &g_outChain))) g_outChain = nullptr;
+                if (FAILED(factory->CreateSwapChain(g_dev, &sd, &o.chain))) o.chain = nullptr;
             }
-            if (g_outChain)
+            if (o.chain)
             {
                 factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
-                LOG("Output swap chain created (%s)", sd.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ? "flip" : "blit");
+                LOG("%s swap chain created (%s)", o.name,
+                    sd.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ? "flip" : "blit");
             }
         }
         SafeRelease(factory);
         SafeRelease(adapter);
         SafeRelease(dxgiDev);
-        if (!g_outChain) { LOG("Could not create the output swap chain"); return false; }
+        if (!o.chain) { LOG("Could not create the %s swap chain", o.name); return false; }
 
         ID3D11Texture2D* buf = nullptr;
-        if (FAILED(g_outChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&buf)))
-            || FAILED(g_dev->CreateRenderTargetView(buf, nullptr, &g_outRTV)))
+        if (FAILED(o.chain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&buf)))
+            || FAILED(g_dev->CreateRenderTargetView(buf, nullptr, &o.rtv)))
         {
             SafeRelease(buf);
-            LOG("Could not create the output render target");
-            SafeRelease(g_outChain);
+            LOG("Could not create the %s render target", o.name);
+            SafeRelease(o.chain);
             return false;
         }
         SafeRelease(buf);
@@ -442,19 +537,19 @@ float4 PSMain(VSOut i) : SV_Target
     // ---------------------------------------------------------------------
     // Per-frame compositing
     // ---------------------------------------------------------------------
-    void DrawRegions()
+    void DrawRegions(int window)
     {
-        const std::vector<Rect> dst = SnappedDests();
-        const size_t n = g_cfg.ScreenCount();
+        Output& o = g_outs[window];
+        const std::vector<Placement> placements = Placements(window, o.w, o.h);
 
         D3D11_VIEWPORT vp = {};
-        vp.Width = static_cast<float>(g_cfg.outW);
-        vp.Height = static_cast<float>(g_cfg.outH);
+        vp.Width = static_cast<float>(o.w);
+        vp.Height = static_cast<float>(o.h);
         vp.MaxDepth = 1.0f;
 
         const float black[4] = { 0, 0, 0, 1 };
-        g_ctx->OMSetRenderTargets(1, &g_outRTV, nullptr);
-        g_ctx->ClearRenderTargetView(g_outRTV, black);
+        g_ctx->OMSetRenderTargets(1, &o.rtv, nullptr);
+        g_ctx->ClearRenderTargetView(o.rtv, black);
         g_ctx->RSSetViewports(1, &vp);
         g_ctx->RSSetState(g_rs);
         g_ctx->OMSetBlendState(g_blend, nullptr, 0xFFFFFFFF);
@@ -472,10 +567,10 @@ float4 PSMain(VSOut i) : SV_Target
         g_ctx->PSSetSamplers(0, 1, &g_samp);
 
         const float tu = 1.0f / g_srcW, tv = 1.0f / g_srcH;
-        for (size_t i = 0; i < n; ++i)
+        for (const Placement& p : placements)
         {
-            const Rect& d = dst[i];
-            const Rect& s = g_cfg.sources[i];
+            const Rect& d = p.dest;
+            const Rect& s = p.source;
             DrawConstants c;
             c.dst[0] = d.originX; c.dst[1] = d.originY;
             c.dst[2] = d.originX + d.sizeX; c.dst[3] = d.originY + d.sizeY;
@@ -497,9 +592,18 @@ float4 PSMain(VSOut i) : SV_Target
         g_ctx->PSSetShaderResources(0, 1, &nullSRV);
     }
 
+    bool IsOurChain(IDXGISwapChain* chain)
+    {
+        for (const Output& o : g_outs)
+            if (o.chain && o.chain == chain) return true;
+        return false;
+    }
+
     void Composite(IDXGISwapChain* gameChain)
     {
-        if (g_failed || !g_outWnd.load()) return;
+        if (g_failed) return;
+        for (const Output& o : g_outs)
+            if (!o.ready.load()) return;   // window thread still setting up
 
         if (!g_dev)
         {
@@ -512,14 +616,24 @@ float4 PSMain(VSOut i) : SV_Target
             g_dev->GetImmediateContext(&g_ctx);
             if (!InitPipeline()) { g_failed = true; return; }
         }
-        if (!EnsureOutput()) { g_failed = true; return; }
 
-        // Tie our window to the game's window (once per game window)
+        bool any = false;
+        for (Output& o : g_outs)
+        {
+            if (o.failed || !o.hwnd.load()) continue;
+            if (EnsureOutput(o)) any = true;
+            else o.failed = true;
+        }
+        if (!any) { LOG("No output windows; compositor disabled"); g_failed = true; return; }
+
+        // Tie our windows to the game's window (once per game window)
         DXGI_SWAP_CHAIN_DESC scd;
         if (SUCCEEDED(gameChain->GetDesc(&scd)) && scd.OutputWindow && scd.OutputWindow != g_gameWnd)
         {
             g_gameWnd = scd.OutputWindow;
-            PostMessageW(g_outWnd.load(), WM_APP_ATTACH, reinterpret_cast<WPARAM>(g_gameWnd), 0);
+            for (const Output& o : g_outs)
+                if (HWND h = o.hwnd.load())
+                    PostMessageW(h, WM_APP_ATTACH, reinterpret_cast<WPARAM>(g_gameWnd), 0);
         }
 
         ID3D11Texture2D* bb = nullptr;
@@ -545,15 +659,22 @@ float4 PSMain(VSOut i) : SV_Target
         if (g_srcMips) g_ctx->GenerateMips(g_srcSRV);
 
         Backup(g_backup);
-        DrawRegions();
+        for (int w = 0; w < kWindowCount; ++w)
+            if (g_outs[w].chain) DrawRegions(w);
         Restore(g_backup);
 
-        g_outChain->Present(g_cfg.vsync ? 1 : 0, 0);
-
-        if (!g_shown)
+        // The panel first: it doesn't wait for vsync, so the main window's wait
+        // doesn't hold it back.
+        for (int w = kWindowCount - 1; w >= 0; --w)
         {
-            g_shown = true;
-            ShowWindowAsync(g_outWnd.load(), SW_SHOWNOACTIVATE);
+            Output& o = g_outs[w];
+            if (!o.chain) continue;
+            o.chain->Present(o.vsync ? 1 : 0, 0);
+            if (!o.shown)
+            {
+                o.shown = true;
+                ShowWindowAsync(o.hwnd.load(), SW_SHOWNOACTIVATE);
+            }
         }
         if (!g_loggedFirst)
         {
@@ -578,7 +699,7 @@ float4 PSMain(VSOut i) : SV_Target
     HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain* chain, UINT sync, UINT flags)
     {
         // Our own Present comes through here too; only composite the game's frames.
-        if (chain != g_outChain && !(flags & DXGI_PRESENT_TEST) && !g_failed)
+        if (!IsOurChain(chain) && !(flags & DXGI_PRESENT_TEST) && !g_failed)
         {
             if (!SafeComposite(chain))
             {
@@ -634,6 +755,17 @@ float4 PSMain(VSOut i) : SV_Target
 
 bool InstallCompositor()
 {
+    Output& main = g_outs[kMainWindow];
+    main.name = "Output";
+    main.x = g_cfg.outX;
+    main.y = g_cfg.outY;
+    main.w = g_cfg.outW;
+    main.h = g_cfg.outH;
+    main.vsync = g_cfg.vsync;
+    Output& panel = g_outs[kPanelWindow];
+    panel.name = "Touch panel";
+    panel.vsync = g_cfg.panelVsync;   // position and size are found on the window thread
+
     HANDLE t = CreateThread(nullptr, 0, WindowThread, nullptr, 0, nullptr);
     if (t) CloseHandle(t);
 
