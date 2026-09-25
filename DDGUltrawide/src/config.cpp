@@ -143,6 +143,9 @@ void LoadConfig(const std::wstring& ini)
     g_cfg.pixelSnap = ReadInt(ini, L"Output", L"PixelSnap", 1) != 0;
     g_cfg.gameWindowMode = ReadInt(ini, L"Output", L"GameWindow", 0);
 
+    g_cfg.arcadeLayout = ReadInt(ini, L"Layout", L"ArcadeLayout", 0) != 0;
+    float gap;
+    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeGap", L""), gap)) g_cfg.arcadeGap = gap;
     ReadRects(ini, L"Layout", L"P", g_cfg.dests);
     ReadRects(ini, L"Source", L"S", g_cfg.sources);
 
@@ -176,9 +179,19 @@ void LoadConfig(const std::wstring& ini)
         LOG("Game render size: %dx%d", g_cfg.renderW, g_cfg.renderH);
     else
         LOG("Game render size: left to the game");
-    LogRects("P", g_cfg.dests);
-    LogRects("S", g_cfg.sources);
-    if (g_cfg.dests.size() != g_cfg.sources.size())
+    if (g_cfg.arcadeLayout)
+    {
+        LOG("Arcade layout, %.2f\" gaps (ignores [Layout] P0..P3 and [Source]):", g_cfg.arcadeGap);
+        for (const Placement& p : Placements(kMainWindow, g_cfg.outW, g_cfg.outH))
+            LOG("  Screen %d: %.0fx%.0f at %.0f,%.0f", p.screen, p.dest.sizeX * g_cfg.outW,
+                p.dest.sizeY * g_cfg.outH, p.dest.originX * g_cfg.outW, p.dest.originY * g_cfg.outH);
+    }
+    else
+    {
+        LogRects("P", g_cfg.dests);
+        LogRects("S", g_cfg.sources);
+    }
+    if (!g_cfg.arcadeLayout && g_cfg.dests.size() != g_cfg.sources.size())
         LOG("Note: %zu layout entries but %zu source entries; drawing %zu screens",
             g_cfg.dests.size(), g_cfg.sources.size(), g_cfg.ScreenCount());
     if (g_cfg.panelWindow)
@@ -196,8 +209,77 @@ void LoadConfig(const std::wstring& ini)
     }
 }
 
+namespace
+{
+    // The cabinet's 2x2 frame, and the rows of the panel left visible by its
+    // matte (the bottom 256 of its 1080 rows are covered on the cabinet).
+    const Rect kStockSources[4] = { {0.5f, 0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f, 0.0f},
+                                    {0.5f, 0.5f, 0.0f, 0.5f}, {0.5f, 0.5f, 0.5f, 0.5f} };
+    constexpr float kPanelVisibleRows = 824.0f;
+
+    // Cabinet screen sizes: 55" center, 42" sides. The center's width in inches
+    // (16:9) converts the gap between screens from inches to pixels.
+    constexpr float kSideScale = 42.0f / 55.0f;
+    constexpr float kCenterWidthInches = 55.0f * 16.0f / 18.357560f;   // 18.36 = sqrt(16^2 + 9^2)
+
+    // The arcade layout in a width x height window: the three forward screens at
+    // their cabinet proportions, side by side (ArcadeGap inches apart, scaled like
+    // the screens) with a flush bottom edge, and (when
+    // it isn't in its own window) the touch panel centered under the center screen
+    // at a third of the height. The center screen gets as much of the rest as
+    // fits; everything is centered in the window. Edges are whole pixels, so
+    // neighboring screens share an exact boundary.
+    std::vector<Placement> ArcadePlacements(int width, int height, bool withPanel)
+    {
+        const float W = static_cast<float>(width), H = static_cast<float>(height);
+
+        float panelH = 0, panelW = 0;
+        if (withPanel)
+        {
+            panelH = H / 3;
+            panelW = panelH * 1920.0f / kPanelVisibleRows;
+        }
+
+        // Center screen: limited by the width (with the two sides and gaps) or the height left over
+        const float gapScale = std::fmax(g_cfg.arcadeGap, 0.0f) / kCenterWidthInches;   // gap / center width
+        const float centerW = std::fmin(W / (1 + 2 * kSideScale + 2 * gapScale), (H - panelH) * 16.0f / 9.0f);
+        const float centerH = centerW * 9.0f / 16.0f;
+        const float sideW = centerW * kSideScale, sideH = centerH * kSideScale;
+        const float gap = centerW * gapScale;
+
+        const float left = (W - (centerW + 2 * sideW + 2 * gap)) / 2;
+        const float top = (H - (centerH + panelH)) / 2;
+        const float bottom = top + centerH;    // shared bottom edge of the forward screens
+
+        // Pixel edges, left to right: left screen, gap, center screen, gap, right screen
+        auto px = [](float v) { return static_cast<float>(std::floor(v + 0.5f)); };
+        const float centerL = left + sideW + gap, centerR = centerL + centerW;
+        const float x0 = px(left), x1 = px(left + sideW), x2 = px(centerL), x3 = px(centerR);
+        const float x4 = px(centerR + gap), x5 = px(centerR + gap + sideW);
+        const float yb = px(bottom), yc = px(top), ys = px(bottom - sideH);
+        auto rect = [&](float l, float t, float r, float b) { return Rect{ (r - l) / W, (b - t) / H, l / W, t / H }; };
+
+        std::vector<Placement> out;
+        out.push_back({ 0, rect(x0, ys, x1, yb), kStockSources[0] });
+        out.push_back({ 1, rect(x2, yc, x3, yb), kStockSources[1] });
+        out.push_back({ 2, rect(x4, ys, x5, yb), kStockSources[2] });
+        if (withPanel)
+        {
+            const float mid = (centerL + centerR) / 2;
+            Rect src = kStockSources[kTouchPanelScreen];
+            src.sizeY *= kPanelVisibleRows / 1080.0f;
+            out.push_back({ kTouchPanelScreen,
+                            rect(px(mid - panelW / 2), yb, px(mid + panelW / 2), px(bottom + panelH)), src });
+        }
+        return out;
+    }
+}
+
 std::vector<Placement> Placements(int window, int width, int height)
 {
+    if (g_cfg.arcadeLayout && window == kMainWindow)
+        return ArcadePlacements(width, height, !g_cfg.panelWindow);
+
     auto snap = [&](const Rect& r)
     {
         if (!g_cfg.pixelSnap || width <= 0 || height <= 0) return r;

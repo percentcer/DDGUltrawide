@@ -45,7 +45,10 @@ See the comments in `DDGUltrawide.ini`. In short:
 - `[Output]`: size and position of the output window, vsync, pixel snapping, and
   how to keep the game's own window out of sight.
 - `[Layout]` / `[Source]`: for each screen, where to draw it in the output and
-  where it is in the game's frame, as fractions (e.g. `1/3`).
+  where it is in the game's frame, as fractions (e.g. `1/3`). Or set
+  `ArcadeLayout=1` to size the screens like the cabinet (smaller 42" side
+  screens beside the 55" center, flush along the bottom, with an `ArcadeGap`
+  between them, 2" by default), computed automatically for your output size.
 - `[TouchPanelWindow]`: shows the touch panel full screen on a separate monitor
   (e.g. a touchscreen) instead of in the main output. Pick the monitor by the
   number Windows shows for it, or place the window explicitly.
