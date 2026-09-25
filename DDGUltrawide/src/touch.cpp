@@ -61,8 +61,11 @@ namespace
         const float fx = (ox + 0.5f) / oc.right;
         const float fy = (oy + 0.5f) / oc.bottom;
 
-        for (const Placement& p : Placements(window, oc.right, oc.bottom))
+        // Topmost (last drawn) first, where screens overlap
+        const std::vector<Placement> placements = Placements(window, oc.right, oc.bottom);
+        for (auto it = placements.rbegin(); it != placements.rend(); ++it)
         {
+            const Placement& p = *it;
             if (forceRegion >= 0 ? p.screen != forceRegion : !IsTouchRegion(p.screen)) continue;
 
             const Rect& d = p.dest;
@@ -95,8 +98,9 @@ namespace
         const float fx = (ox + 0.5f) / oc.right;
         const float fy = (oy + 0.5f) / oc.bottom;
         const std::vector<Placement> placements = Placements(window, oc.right, oc.bottom);
-        for (const Placement& p : placements)
+        for (auto it = placements.rbegin(); it != placements.rend(); ++it)   // topmost first
         {
+            const Placement& p = *it;
             const float u = (fx - p.dest.originX) / p.dest.sizeX;
             const float v = (fy - p.dest.originY) / p.dest.sizeY;
             if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;

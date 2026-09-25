@@ -23,6 +23,8 @@ struct Config
     // instead (ignores P0.. and [Source])
     bool arcadeLayout = true;
     float arcadeGap = 2.0f;             // gap between the forward screens, in cabinet inches
+    bool allowPanelOverlap = false;     // let the touch panel cover the center screen's bottom edge
+    float panelScaling = 0.75f;         // touch panel size, relative to a third of the output's height
 
     // [Source] S0..: where each screen is in the game's own frame
     std::vector<Rect> sources;

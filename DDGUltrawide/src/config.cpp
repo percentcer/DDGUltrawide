@@ -146,6 +146,9 @@ void LoadConfig(const std::wstring& ini)
     g_cfg.arcadeLayout = ReadInt(ini, L"Layout", L"ArcadeLayout", 1) != 0;
     float gap;
     if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeGap", L""), gap)) g_cfg.arcadeGap = gap;
+    g_cfg.allowPanelOverlap = ReadInt(ini, L"Layout", L"ArcadeTouchPanelAllowOverlap", 0) != 0;
+    float scaling;
+    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeTouchPanelScaling", L""), scaling)) g_cfg.panelScaling = scaling;
     ReadRects(ini, L"Layout", L"P", g_cfg.dests);
     ReadRects(ini, L"Source", L"S", g_cfg.sources);
 
@@ -181,7 +184,8 @@ void LoadConfig(const std::wstring& ini)
         LOG("Game render size: left to the game");
     if (g_cfg.arcadeLayout)
     {
-        LOG("Arcade layout, %.2f\" gaps (ignores [Layout] P0..P3 and [Source]):", g_cfg.arcadeGap);
+        LOG("Arcade layout, %.2f\" gaps, panel scaling %.2f, panel overlap %s (ignores [Layout] P0..P3 and [Source]):",
+            g_cfg.arcadeGap, g_cfg.panelScaling, g_cfg.allowPanelOverlap ? "allowed" : "off");
         for (const Placement& p : Placements(kMainWindow, g_cfg.outW, g_cfg.outH))
             LOG("  Screen %d: %.0fx%.0f at %.0f,%.0f", p.screen, p.dest.sizeX * g_cfg.outW,
                 p.dest.sizeY * g_cfg.outH, p.dest.originX * g_cfg.outW, p.dest.originY * g_cfg.outH);
@@ -226,9 +230,14 @@ namespace
     // their cabinet proportions, side by side (ArcadeGap inches apart, scaled like
     // the screens) with a flush bottom edge, and (when
     // it isn't in its own window) the touch panel centered under the center screen
-    // at a third of the height. The center screen gets as much of the rest as
-    // fits; everything is centered in the window. Edges are whole pixels, so
-    // neighboring screens share an exact boundary.
+    // at a third of the height, times ArcadeTouchPanelScaling. The center screen
+    // gets as much of the rest as fits; everything is centered in the window.
+    // Edges are whole pixels, so neighboring screens share an exact boundary.
+    //
+    // With ArcadeTouchPanelAllowOverlap, the height left over under the panel no
+    // longer limits the center screen: the screens can use the full width, the
+    // center screen's top edge sits at the top of the window, and the panel sits
+    // at the bottom, drawn over the center screen's bottom edge where they meet.
     std::vector<Placement> ArcadePlacements(int width, int height, bool withPanel)
     {
         const float W = static_cast<float>(width), H = static_cast<float>(height);
@@ -236,20 +245,24 @@ namespace
         float panelH = 0, panelW = 0;
         if (withPanel)
         {
-            panelH = H / 3;
+            panelH = H / 3 * std::fmin(std::fmax(g_cfg.panelScaling, 0.05f), 3.0f);
             panelW = panelH * 1920.0f / kPanelVisibleRows;
         }
 
-        // Center screen: limited by the width (with the two sides and gaps) or the height left over
+        // Center screen: limited by the width (with the two sides and gaps) or the
+        // height (left over under the panel, or all of it when overlap is allowed)
         const float gapScale = std::fmax(g_cfg.arcadeGap, 0.0f) / kCenterWidthInches;   // gap / center width
-        const float centerW = std::fmin(W / (1 + 2 * kSideScale + 2 * gapScale), (H - panelH) * 16.0f / 9.0f);
+        const float widthLimit = W / (1 + 2 * kSideScale + 2 * gapScale);
+        const bool overlap = withPanel && g_cfg.allowPanelOverlap && std::fmin(widthLimit, H * 16.0f / 9.0f) * 9.0f / 16.0f + panelH > H;
+        const float centerW = std::fmin(widthLimit, (overlap ? H : H - panelH) * 16.0f / 9.0f);
         const float centerH = centerW * 9.0f / 16.0f;
         const float sideW = centerW * kSideScale, sideH = centerH * kSideScale;
         const float gap = centerW * gapScale;
 
         const float left = (W - (centerW + 2 * sideW + 2 * gap)) / 2;
-        const float top = (H - (centerH + panelH)) / 2;
+        const float top = overlap ? 0.0f : (H - (centerH + panelH)) / 2;
         const float bottom = top + centerH;    // shared bottom edge of the forward screens
+        const float panelTop = overlap ? H - panelH : bottom;
 
         // Pixel edges, left to right: left screen, gap, center screen, gap, right screen
         auto px = [](float v) { return static_cast<float>(std::floor(v + 0.5f)); };
@@ -268,8 +281,9 @@ namespace
             const float mid = (centerL + centerR) / 2;
             Rect src = kStockSources[kTouchPanelScreen];
             src.sizeY *= kPanelVisibleRows / 1080.0f;
+            // Last, so it's drawn over the center screen when they overlap
             out.push_back({ kTouchPanelScreen,
-                            rect(px(mid - panelW / 2), yb, px(mid + panelW / 2), px(bottom + panelH)), src });
+                            rect(px(mid - panelW / 2), px(panelTop), px(mid + panelW / 2), px(panelTop + panelH)), src });
         }
         return out;
     }
