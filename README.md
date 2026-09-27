@@ -48,13 +48,14 @@ See the comments in `DDGUltrawide.ini`. In short:
 - `[Layout]`: by default (`ArcadeLayout=1`) the screens are sized like the
   cabinet (smaller 42" side screens beside the 55" center, flush along the
   bottom, with an `ArcadeGap` between them, 2" by default), computed
-  automatically for your output size. `ArcadeTouchPanelScaling` (0.75 by
-  default) sets the touch panel's size, trading it against the forward
+  automatically for your output size, and drawn inside a picture of the
+  cabinet (`ArcadeCabinet`: its walls in `ArcadeCabinetColor`, a metal frame
+  with screws around each screen, and the console). `ArcadeTouchPanelScaling`
+  (0.75 by default) sets the touch panel's size, trading it against the forward
   screens', and `ArcadeTouchPanelAllowOverlap=1` lets the screens use the full
   width by drawing the touch panel over the bottom edge of the center screen.
-  With `ArcadeLayout=0`, `[Layout]` and
-  `[Source]` give each screen's position in the output and in the game's frame,
-  as fractions (e.g. `1/3`).
+  With `ArcadeLayout=0`, `[Layout]` and `[Source]` give each screen's position
+  in the output and in the game's frame, as fractions (e.g. `1/3`).
 - `[TouchPanelWindow]`: shows the touch panel full screen on a separate monitor
   (e.g. a touchscreen) instead of in the main output. Pick the monitor by the
   number Windows shows for it, or place the window explicitly.

@@ -107,6 +107,126 @@ float4 PSMain(VSOut i) : SV_Target
 }
 )";
 
+    // The cabinet drawn behind the arcade layout (ArcadeCabinet): a full-window
+    // pass drawn before the screens, all procedural so it's sharp at any size.
+    ID3D11VertexShader* g_vsFull = nullptr;
+    ID3D11PixelShader* g_psCabinet = nullptr;
+    ID3D11Buffer* g_cabinetCB = nullptr;
+
+    struct CabinetConstants
+    {
+        float screens[3][4];   // forward screens' pictures (px): left, top, right, bottom
+        float screws[3][4];    // x = across the top rail, y = down each side rail
+        float panel[4];        // touch panel's picture (px), or zeros
+        float wall[4];         // rgb = wall color
+        float misc[4];         // x = frame width, y = lip height, z = console top, w = output height
+    };
+
+    const char* kCabinetShader = R"(
+cbuffer Cabinet : register(b0)
+{
+    float4 scr[3];
+    float4 screws[3];
+    float4 panel;
+    float4 wall;
+    float4 misc;
+};
+
+float4 VSFull(uint id : SV_VertexID) : SV_Position
+{
+    float2 t = float2(id & 1, id >> 1);
+    return float4(t.x * 2 - 1, 1 - t.y * 2, 0, 1);
+}
+
+float Hash(float2 p)
+{
+    return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+// Signed distance from a box (left, top, right, bottom): negative inside.
+float BoxDist(float2 p, float4 b)
+{
+    float2 d = abs(p - (b.xy + b.zw) * 0.5) - (b.zw - b.xy) * 0.5;
+    return length(max(d, 0)) + min(max(d.x, d.y), 0);
+}
+
+// A dome-headed screw of radius r at c, lit from above, over col.
+float3 Screw(float3 col, float2 p, float2 c, float r)
+{
+    float2 d = p - c;
+    float l = length(d);
+    col *= 1 - 0.35 * saturate(1 - (length(d - float2(0, r * 0.3)) - r * 0.9) / (r * 0.4));   // shadow below
+    float2 n = d / r;
+    float3 head = lerp(float3(0.30, 0.31, 0.32), float3(0.90, 0.91, 0.92),
+                       saturate(0.5 - 0.5 * dot(n, float2(0.45, 0.9))));
+    head *= lerp(1.0, 0.72, smoothstep(0.65, 1.0, l / r));                 // rim
+    head += 0.35 * saturate(1 - length(n + float2(0.25, 0.45)) / 0.3);    // highlight
+    return lerp(col, head, saturate(r - l + 0.5));
+}
+
+float4 PSCabinet(float4 pos : SV_Position) : SV_Target
+{
+    float2 p = pos.xy;
+    float frame = misc.x, lip = misc.y, consoleTop = misc.z, H = misc.w;
+
+    // Wall: the cabinet's beige-gray, lit from above, with a little grain
+    float3 col = wall.rgb * lerp(1.05, 0.85, saturate(p.y / H));
+    col *= 1 + (Hash(floor(p)) - 0.5) * 0.03;
+
+    // Dark console below the screens, its front edge catching the light
+    if (p.y >= consoleTop)
+    {
+        float t = saturate((p.y - consoleTop) / max(H - consoleTop, 1));
+        col = float3(0.085, 0.09, 0.095) * lerp(1.3, 0.7, t);
+        col += 0.22 * saturate(1 - (p.y - consoleTop) / 2);
+    }
+
+    [unroll] for (int k = 0; k < 3; ++k)
+    {
+        float4 r = scr[k];
+        if (r.z <= r.x) continue;
+        float4 o = float4(r.x - frame, r.y - frame, r.z + frame, r.w + lip);   // outside of the frame
+        float dOut = BoxDist(p, o);
+
+        // Soft shadow on the wall, falling slightly downward
+        if (dOut > 0 && p.y < consoleTop)
+            col *= 1 - 0.3 * saturate(1 - BoxDist(p - float2(0, frame * 0.2), o) / (frame * 0.6));
+        if (dOut > 1) continue;
+
+        // Frame: light brushed metal (brushed along each rail), lit from above,
+        // with a bright bevel on its outer edge and a dark gasket at the picture
+        bool sideRail = p.y > r.y && (p.x < r.x || p.x > r.z);
+        float3 m = float3(0.60, 0.61, 0.62);
+        m *= 0.97 + 0.06 * Hash(sideRail ? float2(floor(p.x), 1) : float2(1, floor(p.y)));
+        m *= lerp(1.1, 0.85, saturate((p.y - o.y) / (o.w - o.y)));
+        m += 0.18 * saturate(1 + dOut / max(frame * 0.08, 1));
+        m = lerp(m, float3(0.04, 0.04, 0.045), saturate(frame * 0.12 - BoxDist(p, r) + 0.5));
+
+        // Screws: evenly spaced along the top rail and down both side rails
+        float sr = frame * 0.17;
+        float n = screws[k].x, w = r.z - r.x;
+        float i = clamp(floor((p.x - r.x) / w * n), 0, n - 1);
+        m = Screw(m, p, float2(r.x + w * (i + 0.5) / n, o.y + frame * 0.5), sr);
+        float nd = screws[k].y, h = r.w - r.y;
+        float j = clamp(floor((p.y - r.y) / h * nd), 0, nd - 1);
+        float cy = r.y + h * (j + 0.5) / nd;
+        m = Screw(m, p, float2(o.x + frame * 0.5, cy), sr);
+        m = Screw(m, p, float2(o.z - frame * 0.5, cy), sr);
+
+        col = lerp(col, m, saturate(0.5 - dOut));
+    }
+
+    // Touch panel: set into the console in a black surround with a thin lit edge
+    if (panel.z > panel.x)
+    {
+        float d = BoxDist(p, panel) - frame * 0.35;
+        float3 s = float3(0.02, 0.02, 0.025) + 0.12 * saturate(1 - abs(d + 1.5) / 1.5);
+        col = lerp(col, s, saturate(0.5 - d));
+    }
+    return float4(col, 1);
+}
+)";
+
     // ---------------------------------------------------------------------
     // Output windows
     // ---------------------------------------------------------------------
@@ -276,6 +396,75 @@ float4 PSMain(VSOut i) : SV_Target
         }
     }
 
+    void InitCabinet()
+    {
+        ID3DBlob* vsBlob = nullptr;
+        ID3DBlob* psBlob = nullptr;
+        ID3DBlob* err = nullptr;
+        const size_t len = strlen(kCabinetShader);
+        bool ok = SUCCEEDED(D3DCompile(kCabinetShader, len, "cabinet", nullptr, nullptr, "VSFull", "vs_4_0", 0, 0, &vsBlob, &err))
+               && SUCCEEDED(D3DCompile(kCabinetShader, len, "cabinet", nullptr, nullptr, "PSCabinet", "ps_4_0", 0, 0, &psBlob, &err));
+        if (!ok)
+            LOG("Cabinet shader compile failed: %s", err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
+        SafeRelease(err);
+
+        D3D11_BUFFER_DESC cbd = {};
+        cbd.ByteWidth = sizeof(CabinetConstants);
+        cbd.Usage = D3D11_USAGE_DYNAMIC;
+        cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        ok = ok && SUCCEEDED(g_dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_vsFull))
+                && SUCCEEDED(g_dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_psCabinet))
+                && SUCCEEDED(g_dev->CreateBuffer(&cbd, nullptr, &g_cabinetCB));
+        SafeRelease(vsBlob);
+        SafeRelease(psBlob);
+        if (!ok)
+        {
+            LOG("Cabinet unavailable; drawing the screens on black");
+            SafeRelease(g_vsFull);
+            SafeRelease(g_psCabinet);
+            SafeRelease(g_cabinetCB);
+        }
+    }
+
+    // Draws the cabinet behind the screens, if it's on for this window.
+    // Leaves the screen shaders and constant buffer bound afterwards.
+    void DrawCabinet(int window)
+    {
+        if (window != kMainWindow || !g_psCabinet) return;
+        const Output& o = g_outs[window];
+        CabinetGeometry g;
+        if (!GetCabinetGeometry(o.w, o.h, g)) return;
+
+        CabinetConstants c = {};
+        for (int i = 0; i < 3; ++i)
+        {
+            for (int j = 0; j < 4; ++j) c.screens[i][j] = g.screens[i][j];
+            c.screws[i][0] = static_cast<float>(g.screwsAcross[i]);
+            c.screws[i][1] = static_cast<float>(g.screwsDown[i]);
+        }
+        for (int j = 0; j < 4; ++j) c.panel[j] = g.panel[j];
+        for (int j = 0; j < 3; ++j) c.wall[j] = g.color[j];
+        c.misc[0] = g.frame;
+        c.misc[1] = g.lip;
+        c.misc[2] = g.consoleTop;
+        c.misc[3] = static_cast<float>(o.h);
+
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (FAILED(g_ctx->Map(g_cabinetCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+        memcpy(m.pData, &c, sizeof(c));
+        g_ctx->Unmap(g_cabinetCB, 0);
+
+        g_ctx->VSSetShader(g_vsFull, nullptr, 0);
+        g_ctx->PSSetShader(g_psCabinet, nullptr, 0);
+        g_ctx->PSSetConstantBuffers(0, 1, &g_cabinetCB);
+        g_ctx->Draw(4, 0);
+
+        g_ctx->VSSetShader(g_vs, nullptr, 0);
+        g_ctx->PSSetShader(g_ps, nullptr, 0);
+        g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
+    }
+
     bool InitPipeline()
     {
         ID3DBlob* vsBlob = nullptr;
@@ -331,8 +520,10 @@ float4 PSMain(VSOut i) : SV_Target
           && SUCCEEDED(g_dev->CreateBlendState(&bd, &g_blend))
           && SUCCEEDED(g_dev->CreateRasterizerState(&rd, &g_rs))
           && SUCCEEDED(g_dev->CreateDepthStencilState(&dd, &g_dss));
-        if (!ok) LOG("Pipeline state creation failed");
-        return ok;
+        if (!ok) { LOG("Pipeline state creation failed"); return false; }
+
+        InitCabinet();   // optional: without it the screens are drawn on black
+        return true;
     }
 
     // Our copy of the game's frame, with a mip chain for good-quality downscaling.
@@ -563,6 +754,8 @@ float4 PSMain(VSOut i) : SV_Target
         g_ctx->DSSetShader(nullptr, nullptr, 0);
         g_ctx->VSSetConstantBuffers(0, 1, &g_cb);
         g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
+        DrawCabinet(window);
+
         g_ctx->PSSetShaderResources(0, 1, &g_srcSRV);
         g_ctx->PSSetSamplers(0, 1, &g_samp);
 

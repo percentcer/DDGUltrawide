@@ -25,6 +25,8 @@ struct Config
     float arcadeGap = 2.0f;             // gap between the forward screens, in cabinet inches
     bool allowPanelOverlap = false;     // let the touch panel cover the center screen's bottom edge
     float panelScaling = 0.75f;         // touch panel size, relative to a third of the output's height
+    bool arcadeCabinet = true;          // draw the cabinet (wall, screen frames, console) around the screens
+    float cabinetColor[3] = { 0xBA / 255.0f, 0xB3 / 255.0f, 0xA5 / 255.0f };   // the cabinet's beige-gray
 
     // [Source] S0..: where each screen is in the game's own frame
     std::vector<Rect> sources;
@@ -79,3 +81,19 @@ struct Placement
 // The screens drawn into a window of the given client size. With the touch
 // panel window enabled, screen 3 moves from the main window to that window.
 std::vector<Placement> Placements(int window, int width, int height);
+
+// The cabinet drawn behind the arcade layout (ArcadeCabinet), in output pixels.
+struct CabinetGeometry
+{
+    float screens[3][4];        // forward screens' pictures: left, top, right, bottom
+    int screwsAcross[3];        // screws along each frame's top rail
+    int screwsDown[3];          // screws down each of its side rails
+    float panel[4];             // the touch panel's picture (all 0 when it's in its own window)
+    float frame;                // width of the metal rails on the top and sides of each screen
+    float lip;                  // height of the frame below each screen
+    float consoleTop;           // where the dark console below the screens starts
+    float color[3];             // the cabinet's wall color, 0..1
+};
+
+// The main window's cabinet for a width x height output. False when it isn't drawn.
+bool GetCabinetGeometry(int width, int height, CabinetGeometry& out);

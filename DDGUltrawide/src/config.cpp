@@ -51,6 +51,21 @@ namespace
         return true;
     }
 
+    // Parses a hex color, "BAB3A5" or "#BAB3A5", into 0..1 components.
+    bool ParseColor(std::wstring s, float rgb[3])
+    {
+        s = Trim(s);
+        if (!s.empty() && s[0] == L'#') s.erase(0, 1);
+        if (s.size() != 6) return false;
+        wchar_t* end = nullptr;
+        const unsigned long v = wcstoul(s.c_str(), &end, 16);
+        if (!end || *end != 0) return false;
+        rgb[0] = ((v >> 16) & 0xFF) / 255.0f;
+        rgb[1] = ((v >> 8) & 0xFF) / 255.0f;
+        rgb[2] = (v & 0xFF) / 255.0f;
+        return true;
+    }
+
     std::vector<std::wstring> SplitCommas(const std::wstring& s)
     {
         std::vector<std::wstring> parts;
@@ -149,6 +164,10 @@ void LoadConfig(const std::wstring& ini)
     g_cfg.allowPanelOverlap = ReadInt(ini, L"Layout", L"ArcadeTouchPanelAllowOverlap", 0) != 0;
     float scaling;
     if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeTouchPanelScaling", L""), scaling)) g_cfg.panelScaling = scaling;
+    g_cfg.arcadeCabinet = ReadInt(ini, L"Layout", L"ArcadeCabinet", 1) != 0;
+    const std::wstring color = ReadString(ini, L"Layout", L"ArcadeCabinetColor", L"");
+    if (!color.empty() && !ParseColor(color, g_cfg.cabinetColor))
+        LOG("Bad [Layout] ArcadeCabinetColor: %ls (using the default)", color.c_str());
     ReadRects(ini, L"Layout", L"P", g_cfg.dests);
     ReadRects(ini, L"Source", L"S", g_cfg.sources);
 
@@ -185,8 +204,9 @@ void LoadConfig(const std::wstring& ini)
         LOG("Game render size: left to the game");
     if (g_cfg.arcadeLayout)
     {
-        LOG("Arcade layout, %.2f\" gaps, panel scaling %.2f, panel overlap %s (ignores [Layout] P0..P3 and [Source]):",
-            g_cfg.arcadeGap, g_cfg.panelScaling, g_cfg.allowPanelOverlap ? "allowed" : "off");
+        LOG("Arcade layout, %.2f\" gaps, panel scaling %.2f, panel overlap %s, cabinet %s (ignores [Layout] P0..P3 and [Source]):",
+            g_cfg.arcadeGap, g_cfg.panelScaling, g_cfg.allowPanelOverlap ? "allowed" : "off",
+            g_cfg.arcadeCabinet ? "on" : "off");
         for (const Placement& p : Placements(kMainWindow, g_cfg.outW, g_cfg.outH))
             LOG("  Screen %d: %.0fx%.0f at %.0f,%.0f", p.screen, p.dest.sizeX * g_cfg.outW,
                 p.dest.sizeY * g_cfg.outH, p.dest.originX * g_cfg.outW, p.dest.originY * g_cfg.outH);
@@ -241,15 +261,26 @@ namespace
     }
 
     // Cabinet screen sizes: 55" center, 42" sides. The center's width in inches
-    // (16:9) converts the gap between screens from inches to pixels.
+    // (16:9) converts inches on the cabinet (gaps, frames) to pixels.
     constexpr float kSideScale = 42.0f / 55.0f;
     constexpr float kCenterWidthInches = 55.0f * 16.0f / 18.357560f;   // 18.36 = sqrt(16^2 + 9^2)
 
+    // The drawn cabinet's frame around each forward screen, in cabinet inches:
+    // the metal rails on the top and sides, and the lip below.
+    constexpr float kFrameInches = 1.5f;
+    constexpr float kLipInches = 0.5f;
+
+    // Frame sizes as fractions of the center screen's width (0 without the cabinet).
+    float FrameScale() { return g_cfg.arcadeCabinet ? kFrameInches / kCenterWidthInches : 0.0f; }
+    float LipScale() { return g_cfg.arcadeCabinet ? kLipInches / kCenterWidthInches : 0.0f; }
+
     // The arcade layout in a width x height window: the three forward screens at
-    // their cabinet proportions, side by side (ArcadeGap inches apart, scaled like
-    // the screens) with a flush bottom edge, and (when
+    // their cabinet proportions, side by side with a flush bottom edge, and (when
     // it isn't in its own window) the touch panel centered under the center screen
-    // at a third of the height, times ArcadeTouchPanelScaling. The center screen
+    // at a third of the height, times ArcadeTouchPanelScaling. With ArcadeCabinet,
+    // room is also left for each screen's frame, and ArcadeGap is the space
+    // between neighboring frames (between the pictures without the cabinet). Gaps
+    // and frames are in cabinet inches, scaled like the screens. The center screen
     // gets as much of the rest as fits; everything is centered in the window.
     // Edges are whole pixels, so neighboring screens share an exact boundary.
     //
@@ -268,26 +299,33 @@ namespace
             panelW = panelH * 1920.0f / kPanelVisibleRows;
         }
 
-        // Center screen: limited by the width (with the two sides and gaps) or the
-        // height (left over under the panel, or all of it when overlap is allowed)
-        const float gapScale = std::fmax(g_cfg.arcadeGap, 0.0f) / kCenterWidthInches;   // gap / center width
-        const float widthLimit = W / (1 + 2 * kSideScale + 2 * gapScale);
-        const bool overlap = withPanel && g_cfg.allowPanelOverlap && std::fmin(widthLimit, H * 16.0f / 9.0f) * 9.0f / 16.0f + panelH > H;
-        const float centerW = std::fmin(widthLimit, (overlap ? H : H - panelH) * 16.0f / 9.0f);
+        // Everything relative to the center screen's width
+        const float gapScale = std::fmax(g_cfg.arcadeGap, 0.0f) / kCenterWidthInches;
+        const float frameScale = FrameScale(), lipScale = LipScale();
+        const float rowWidth = 1 + 2 * kSideScale + 2 * gapScale + 6 * frameScale;   // 3 screens, 2 gaps, 6 side rails
+        const float rowHeight = 9.0f / 16.0f + frameScale + lipScale;               // center screen, top rail, lip
+
+        // Center screen: limited by the width or the height (left over under the
+        // panel, or all of it when overlap is allowed)
+        const float widthLimit = W / rowWidth;
+        const bool overlap = withPanel && g_cfg.allowPanelOverlap &&
+                             std::fmin(widthLimit, H / rowHeight) * rowHeight + panelH > H;
+        const float centerW = std::fmin(widthLimit, (overlap ? H : H - panelH) / rowHeight);
         const float centerH = centerW * 9.0f / 16.0f;
         const float sideW = centerW * kSideScale, sideH = centerH * kSideScale;
-        const float gap = centerW * gapScale;
+        const float gap = centerW * gapScale, frame = centerW * frameScale, lip = centerW * lipScale;
 
-        const float left = (W - (centerW + 2 * sideW + 2 * gap)) / 2;
-        const float top = overlap ? 0.0f : (H - (centerH + panelH)) / 2;
+        const float left = (W - centerW * rowWidth) / 2 + frame;   // left screen's picture
+        const float top = (overlap ? 0.0f : (H - (centerW * rowHeight + panelH)) / 2) + frame;
         const float bottom = top + centerH;    // shared bottom edge of the forward screens
-        const float panelTop = overlap ? H - panelH : bottom;
+        const float panelTop = overlap ? H - panelH : bottom + lip;
 
-        // Pixel edges, left to right: left screen, gap, center screen, gap, right screen
+        // Pixel edges, left to right: left screen, frames and gap, center screen, frames and gap, right screen
         auto px = [](float v) { return static_cast<float>(std::floor(v + 0.5f)); };
-        const float centerL = left + sideW + gap, centerR = centerL + centerW;
+        const float between = 2 * frame + gap;
+        const float centerL = left + sideW + between, centerR = centerL + centerW;
         const float x0 = px(left), x1 = px(left + sideW), x2 = px(centerL), x3 = px(centerR);
-        const float x4 = px(centerR + gap), x5 = px(centerR + gap + sideW);
+        const float x4 = px(centerR + between), x5 = px(centerR + between + sideW);
         const float yb = px(bottom), yc = px(top), ys = px(bottom - sideH);
         auto rect = [&](float l, float t, float r, float b) { return Rect{ (r - l) / W, (b - t) / H, l / W, t / H }; };
 
@@ -346,4 +384,38 @@ std::vector<Placement> Placements(int window, int width, int height)
         out.push_back({ screen, snap(g_cfg.dests[i]), g_cfg.sources[i] });
     }
     return out;
+}
+
+bool GetCabinetGeometry(int width, int height, CabinetGeometry& g)
+{
+    if (!g_cfg.arcadeLayout || !g_cfg.arcadeCabinet || width <= 0 || height <= 0) return false;
+
+    g = {};
+    const float W = static_cast<float>(width), H = static_cast<float>(height);
+    float centerW = 0, bottom = 0;
+    for (const Placement& p : Placements(kMainWindow, width, height))
+    {
+        const float r[4] = { p.dest.originX * W, p.dest.originY * H,
+                             (p.dest.originX + p.dest.sizeX) * W, (p.dest.originY + p.dest.sizeY) * H };
+        if (p.screen == kTouchPanelScreen)
+        {
+            for (int i = 0; i < 4; ++i) g.panel[i] = r[i];
+            continue;
+        }
+        if (p.screen < 0 || p.screen > 2) continue;
+        for (int i = 0; i < 4; ++i) g.screens[p.screen][i] = r[i];
+        // Screws on the cabinet: 5 across the center screen's top rail and 4 down
+        // each side; one fewer on the smaller side screens.
+        g.screwsAcross[p.screen] = p.screen == 1 ? 5 : 4;
+        g.screwsDown[p.screen] = p.screen == 1 ? 4 : 3;
+        if (p.screen == 1) centerW = r[2] - r[0];
+        bottom = std::fmax(bottom, r[3]);
+    }
+    if (centerW <= 0) return false;
+
+    g.frame = centerW * FrameScale();
+    g.lip = centerW * LipScale();
+    g.consoleTop = bottom + g.lip;
+    for (int i = 0; i < 3; ++i) g.color[i] = g_cfg.cabinetColor[i];
+    return true;
 }
