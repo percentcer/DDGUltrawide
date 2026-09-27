@@ -122,15 +122,15 @@ namespace
 void LoadConfig(const std::wstring& ini)
 {
     // Defaults: the cabinet's 2x2 frame drawn as three screens across the top
-    // and the touch panel centered below. The panel's bottom 256 of 1080 rows
-    // are matted off on the cabinet, so only its top 824 rows are drawn,
-    // filling the full height below the forward screens (1118x480 at 5120x1440).
+    // and the touch panel centered below. Only the panel's top 822 of 1080 rows
+    // are drawn (the rest is matted off on the cabinet), filling the full height
+    // below the forward screens (1120x480 at 5120x1440).
     g_cfg.dests = { {1.0f / 3, 2.0f / 3, 0.0f, 0.0f},
                     {1.0f / 3, 2.0f / 3, 1.0f / 3, 0.0f},
                     {1.0f / 3, 2.0f / 3, 2.0f / 3, 0.0f},
-                    {1118.0f / 5120, 1.0f / 3, 2001.0f / 5120, 2.0f / 3} };
+                    {1120.0f / 5120, 1.0f / 3, 2000.0f / 5120, 2.0f / 3} };
     g_cfg.sources = { {0.5f, 0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f, 0.0f},
-                      {0.5f, 0.5f, 0.0f, 0.5f}, {0.5f, 824.0f / 2160, 0.5f, 0.5f} };
+                      {0.5f, 0.5f, 0.0f, 0.5f}, {0.5f, kPanelVisibleRows / 2160, 0.5f, 0.5f} };
 
     if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES)
         LOG("Config not found (%ls); using defaults", ini.c_str());
@@ -159,6 +159,7 @@ void LoadConfig(const std::wstring& ini)
     g_cfg.panelW = ReadInt(ini, L"TouchPanelWindow", L"Width", g_cfg.panelW);
     g_cfg.panelH = ReadInt(ini, L"TouchPanelWindow", L"Height", g_cfg.panelH);
     g_cfg.panelVsync = ReadInt(ini, L"TouchPanelWindow", L"VSync", 0) != 0;
+    g_cfg.panelDestFit = ReadString(ini, L"TouchPanelWindow", L"Layout", L"").empty();
     ReadRect(ini, L"TouchPanelWindow", L"Layout", g_cfg.panelDest);
     ReadRect(ini, L"TouchPanelWindow", L"Source", g_cfg.panelSource);
 
@@ -208,18 +209,36 @@ void LoadConfig(const std::wstring& ini)
                 g_cfg.panelMonitor == 0 ? " (auto)" : "", g_cfg.panelVsync ? 1 : 0);
         const Rect& d = g_cfg.panelDest;
         const Rect& s = g_cfg.panelSource;
-        LOG("  Layout: size %.4f x %.4f, origin %.4f, %.4f", d.sizeX, d.sizeY, d.originX, d.originY);
+        if (g_cfg.panelDestFit)
+            LOG("  Layout: fit to the window, keeping the aspect ratio");
+        else
+            LOG("  Layout: size %.4f x %.4f, origin %.4f, %.4f", d.sizeX, d.sizeY, d.originX, d.originY);
         LOG("  Source: size %.4f x %.4f, origin %.4f, %.4f", s.sizeX, s.sizeY, s.originX, s.originY);
     }
 }
 
 namespace
 {
-    // The cabinet's 2x2 frame, and the rows of the panel left visible by its
-    // matte (the bottom 256 of its 1080 rows are covered on the cabinet).
+    // The cabinet's 2x2 frame
     const Rect kStockSources[4] = { {0.5f, 0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f, 0.0f},
                                     {0.5f, 0.5f, 0.0f, 0.5f}, {0.5f, 0.5f, 0.5f, 0.5f} };
-    constexpr float kPanelVisibleRows = 824.0f;
+
+    // The largest rect with the source's aspect ratio (in game pixels) that fits
+    // a width x height window, centered.
+    Rect FitRect(const Rect& source, int width, int height)
+    {
+        const float frameW = g_cfg.renderW > 0 ? static_cast<float>(g_cfg.renderW) : 3840.0f;
+        const float frameH = g_cfg.renderH > 0 ? static_cast<float>(g_cfg.renderH) : 2160.0f;
+        const float aspect = (source.sizeX * frameW) / (source.sizeY * frameH);
+        const float windowAspect = static_cast<float>(width) / height;
+        if (aspect > windowAspect)
+        {
+            const float h = windowAspect / aspect;   // fraction of the window's height
+            return { 1.0f, h, 0.0f, (1.0f - h) / 2 };
+        }
+        const float w = aspect / windowAspect;       // fraction of the window's width
+        return { w, 1.0f, (1.0f - w) / 2, 0.0f };
+    }
 
     // Cabinet screen sizes: 55" center, 42" sides. The center's width in inches
     // (16:9) converts the gap between screens from inches to pixels.
@@ -313,8 +332,11 @@ std::vector<Placement> Placements(int window, int width, int height)
     std::vector<Placement> out;
     if (window == kPanelWindow)
     {
-        if (g_cfg.panelWindow)
-            out.push_back({ kTouchPanelScreen, snap(g_cfg.panelDest), g_cfg.panelSource });
+        if (g_cfg.panelWindow && width > 0 && height > 0)
+        {
+            const Rect dest = g_cfg.panelDestFit ? FitRect(g_cfg.panelSource, width, height) : g_cfg.panelDest;
+            out.push_back({ kTouchPanelScreen, snap(dest), g_cfg.panelSource });
+        }
         return out;
     }
     for (size_t i = 0; i < g_cfg.ScreenCount(); ++i)

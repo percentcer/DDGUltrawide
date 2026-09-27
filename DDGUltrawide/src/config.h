@@ -36,8 +36,9 @@ struct Config
     int panelX = 0, panelY = 0;         // explicit placement, used when panelW and panelH > 0
     int panelW = 0, panelH = 0;
     bool panelVsync = false;            // off so the two windows don't wait on each other
-    Rect panelDest{ 1.0f, 1.0f, 0.0f, 0.0f };      // where the panel is drawn in its window
-    Rect panelSource{ 0.5f, 0.5f, 0.5f, 0.5f };    // where the panel is in the game's frame
+    Rect panelDest{ 1.0f, 1.0f, 0.0f, 0.0f };      // where the panel is drawn in its window...
+    bool panelDestFit = true;                      // ...unless Layout is left out: fit, keeping the aspect ratio
+    Rect panelSource{ 0.5f, 822.0f / 2160, 0.5f, 0.5f };   // where the panel is in the game's frame (the used rows)
 
     // [Touch]
     bool touchEnabled = true;
@@ -59,6 +60,10 @@ void LoadConfig(const std::wstring& iniPath);
 
 // The screen that is the touch panel (bottom-right of the cabinet's 2x2 frame).
 constexpr int kTouchPanelScreen = 3;
+
+// Rows of the touch panel's 1080 that are actually used; the rest is covered by
+// a matte on the cabinet, so it isn't drawn.
+constexpr float kPanelVisibleRows = 822.0f;
 
 // Our output windows.
 enum OutputWindow { kMainWindow = 0, kPanelWindow = 1, kWindowCount = 2 };
