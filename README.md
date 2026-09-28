@@ -46,7 +46,7 @@ See the comments in `DDGUltrawide.ini`. In short:
 - `[Output]`: size and position of the output window, vsync, pixel snapping, and
   how to keep the game's own window out of sight.
 - `[Layout]`: by default (`ArcadeLayout=1`) the screens are sized like the
-  cabinet (smaller 42" side screens beside the 55" center, flush along the
+  cabinet (smaller 43" side screens beside the 55" center, flush along the
   bottom, with an `ArcadeGap` between them, 2" by default), computed
   automatically for your output size, and drawn inside a picture of the
   cabinet (`ArcadeCabinet`: its walls in `ArcadeCabinetColor`, a metal frame

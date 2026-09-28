@@ -264,9 +264,10 @@ namespace
         return { w, 1.0f, (1.0f - w) / 2, 0.0f };
     }
 
-    // Cabinet screen sizes: 55" center, 42" sides. The center's width in inches
-    // (16:9) converts inches on the cabinet (gaps, frames) to pixels.
-    constexpr float kSideScale = 42.0f / 55.0f;
+    // Cabinet screen sizes: 55" center, 43" sides (the installation manual's
+    // parts lists: "LCD ASSY (55INCH WIDE)" and "(43INCH WIDE)"). The center's
+    // width in inches (16:9) converts inches on the cabinet (gaps, frames) to pixels.
+    constexpr float kSideScale = 43.0f / 55.0f;
     constexpr float kCenterWidthInches = 55.0f * 16.0f / 18.357560f;   // 18.36 = sqrt(16^2 + 9^2)
 
     // ---------------------------------------------------------------------
@@ -282,36 +283,79 @@ namespace
     //     holds the screen to the wall
     // Large fasteners sit on the rails, small ones on the brackets.
     // ---------------------------------------------------------------------
+    constexpr float Mm(float mm) { return mm / 25.4f; }
+
     struct FrameSpec
     {
-        float topRail;        // height of the top rail
-        float side;           // width of each side: the rail, or the bracket's flange and lip
-        float bottomRail;     // height of the bottom rail
-        bool brackets;        // Z brackets instead of side rails
-        int topFasteners;     // along the top rail, corner to corner
-        int sideFasteners;    // down each side rail or bracket flange
+        float border;               // the monitor's black border, visible around the picture
+        float topRail;              // frame above the opening (the picture and its border)
+        float side;                 // each side: the rail, or the bracket (both flanges)
+        float bottomRail;           // frame below the opening
+        bool brackets;              // Z brackets down the sides instead of side rails
+        bool bottomBracket;         // a Z bracket below the frame, holding it to the wall
+        // Fasteners, placed in mm from the frame's outer edges
+        int topFasteners;           // along the top, spread evenly...
+        float topInsetMm;           // ...from this far in from each end
+        float topDropMm;            // this far down from the top
+        int sideFasteners;          // down each side...
+        const float* sideDropsMm;   // ...this far down from the top
+        float sideInsetMm;          // this far in from the side
+        float fastenerMm;           // head diameter
     };
+
+    // The center screen, from the manual's head-on drawing of the center cabinet
+    // (page 124, "CENTER VIDEO CABINET ASSY [15]", scaled by its 1300 mm width):
+    // the monitor area (the picture) spans 1210.8 x 678.1 mm between the "CENTER
+    // MONITOR PANEL BRACKET-L/R", each 44.4 mm wide (21.5 mm wall flange, then a
+    // 22.9 mm raised flange), with 4 M4 truss-head screws down each wall flange.
+    // It runs to 6.3 mm below the cabinet's top edge, and 12.7 mm of frame shows
+    // below it. The 5 screws across its top hold the acrylic monitor panel, so
+    // they belong with the acrylic (not drawn yet).
+    constexpr float kCenterSideDropsMm[4] = { 20.3f, 255.6f, 490.8f, 670.3f };
+
+    // The side screens, from the manual's three-quarter drawings of the side
+    // cabinets (pages 144-145, "SIDE VIDEO CABINET ASSY-L/R [1]"), un-foreshortened
+    // using the drawing's three axes and scaled by the cabinet face (the 1035 x
+    // 650 mm footprint's long side, 1222 mm; it also matches the 1955 mm height).
+    // The "SIDE MONITOR PANEL" (acrylic) is 994.4 x 598.3 mm over the 43" picture
+    // (952.4 x 535.7 mm), held by 6 M5 truss-head screws: 4 along the top, 13.3 mm
+    // down, spread from 43.3 mm in from each end, and 1 per side, 9.4 mm in and
+    // 312.5 mm down. The "SIDE MONITOR PANEL STOPPER" bar (about 20 mm tall, 3
+    // screws) sits under it. No black bezel shows: photos of the cabinet show paint
+    // from the picture's edge to the acrylic's, with the side screws centered in
+    // that 21 mm strip.
+    //
+    // Screws (all chrome Torx tamper-proof truss heads, per the parts lists; a
+    // truss head is about twice the thread across):
+    //   - center brackets: M4x10, 8 mm heads
+    //   - center acrylic, along the top: M4x10 on a 14 mm chrome washer (with the acrylic, later)
+    //   - side acrylic and its stopper bar: M5x10, 10 mm heads
+    constexpr float kSideSideDropsMm[1] = { 312.5f };
+
+    constexpr FrameSpec kSideFrame = { 0.0f, Mm(31.3f), Mm(21.0f), Mm(31.3f), false, true,
+                                       4, 43.3f, 13.3f, 1, kSideSideDropsMm, 9.4f, 10.0f };
     constexpr FrameSpec kFrames[3] = {
-        { 1.5f, 1.5f, 1.0f, false, 4, 1 },   // left
-        { 1.7f, 1.6f, 1.0f, true,  5, 4 },   // center
-        { 1.5f, 1.5f, 1.0f, false, 4, 1 },   // right
+        kSideFrame,                                                                                     // left
+        { 0.0f, Mm(6.3f), Mm(44.4f), Mm(12.7f), true, false, 0, 0, 0, 4, kCenterSideDropsMm, 12.8f, 8.0f }, // center
+        kSideFrame,                                                                                     // right
     };
-    constexpr float kBorderIn = 0.3f;           // monitor's black border
-    // Across a side bracket (its width is FrameSpec::side): wall flange, step,
-    // raised flange, in these proportions
-    constexpr float kFlangeParts[3] = { 27.0f, 8.0f, 27.0f };
-    constexpr float kBracketIn = 1.0f;          // height of the Z bracket below each frame
-    constexpr float kBracketLipIn = 0.25f;      // its lip, along the top
+    // Across a side bracket (its width is FrameSpec::side): wall flange, the bend
+    // up, raised flange (the manual: 21.5 and 22.9 mm, meeting at a bend)
+    constexpr float kFlangeParts[3] = { 20.5f, 2.0f, 21.9f };
+    constexpr float kBracketIn = Mm(20.0f);     // height of the bracket below a frame (the side screens' stopper bar)
+    constexpr float kBracketLipIn = Mm(4.0f);   // its lip, along the top
     constexpr float kSeamIn = 0.06f;            // width of a visible seam
-    constexpr float kLargeFastenerIn = 0.6f;    // diameter of a rail fastener
-    constexpr float kSmallFastenerIn = 0.3f;    // diameter of a bracket fastener
+    constexpr float kBracketFastenerIn = Mm(10.0f);   // the stopper bar's screws: M5 truss heads, as on the side panel
     constexpr int kBracketFasteners = 3;        // along the bottom bracket: both ends and the middle
     constexpr float kPanelSurroundIn = 0.5f;    // black surround of the touch panel in the console
 
     // Room each screen's frame takes around its picture, in inches
-    constexpr float FrameSideIn(int s) { return kFrames[s].side + kBorderIn; }
-    constexpr float FrameAboveIn(int s) { return kFrames[s].topRail + kBorderIn; }
-    constexpr float FrameBelowIn(int s) { return kBorderIn + kFrames[s].bottomRail + kBracketIn; }
+    constexpr float FrameSideIn(int s) { return kFrames[s].side + kFrames[s].border; }
+    constexpr float FrameAboveIn(int s) { return kFrames[s].topRail + kFrames[s].border; }
+    constexpr float FrameBelowIn(int s)
+    {
+        return kFrames[s].border + kFrames[s].bottomRail + (kFrames[s].bottomBracket ? kBracketIn : 0.0f);
+    }
 
     // The arcade layout in a width x height window: the three forward screens at
     // their cabinet proportions, side by side with a flush bottom edge, and (when
@@ -544,10 +588,10 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
         // Frame edges: outside, the opening (picture plus the monitor's border), and the rails between
         const float ox0 = r[0] - FrameSideIn(s) * u, ox1 = r[2] + FrameSideIn(s) * u;
         const float oy0 = r[1] - FrameAboveIn(s) * u;
-        const float in0 = r[0] - kBorderIn * u, in1 = r[2] + kBorderIn * u;
-        const float iy0 = r[1] - kBorderIn * u, iy1 = r[3] + kBorderIn * u;
+        const float in0 = r[0] - f.border * u, in1 = r[2] + f.border * u;
+        const float iy0 = r[1] - f.border * u, iy1 = r[3] + f.border * u;
         const float oy1 = iy1 + f.bottomRail * u;               // bottom of the frame
-        const float by1 = oy1 + kBracketIn * u;                 // bottom of the bracket below it
+        const float by1 = oy1 + (f.bottomBracket ? kBracketIn : 0.0f) * u;   // bottom of the bracket below it
         const float lip = kBracketLipIn * u;
         frameLeft = std::fmin(frameLeft, ox0);
         frameRight = std::fmax(frameRight, ox1);
@@ -555,10 +599,9 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
 
         // Rails (one piece on the side screens), and the monitor's border in the opening
         box(ox0, oy0, ox1, oy1, kRailZ, railPaint, kRoundedEdgeIn);
-        box(in0, iy0, in1, iy1, kBorderZ, blackPlastic);
+        if (f.border > 0) box(in0, iy0, in1, iy1, kBorderZ, blackPlastic);
         box(r[0], r[1], r[2], r[3], kGlassZ, blackPlastic);   // under the picture
 
-        float wall0 = 0, wall1 = 0;   // centers of the side brackets' wall flanges, for their fasteners
         if (f.brackets)
         {
             // Side brackets, full height, from the frame's edge to the picture's
@@ -579,40 +622,34 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
             bracket(in1, ox1, false);
             vseam(in0, oy0, iy0, kRailZ); vseam(in0, iy1, oy1, kRailZ);
             vseam(in1, oy0, iy0, kRailZ); vseam(in1, iy1, oy1, kRailZ);
-            wall0 = ox0 + (in0 - ox0) * kFlangeParts[0] / total / 2;
-            wall1 = ox1 - (ox1 - in1) * kFlangeParts[2] / total / 2;
         }
 
         // Bottom bracket: its lip sloping down from the frame, then its face
-        ramp(ox0, oy1, ox1, oy1 + lip, kRailZ, kBracketFaceZ, 1, railPaint);
-        box(ox0, oy1 + lip, ox1, by1, kBracketFaceZ, railPaint, kRoundedEdgeIn / 2);
+        if (f.bottomBracket)
+        {
+            ramp(ox0, oy1, ox1, oy1 + lip, kRailZ, kBracketFaceZ, 1, railPaint);
+            box(ox0, oy1 + lip, ox1, by1, kBracketFaceZ, railPaint, kRoundedEdgeIn / 2);
+        }
 
-        // Fasteners: large ones along the top rail (the end ones half the rail's
-        // height in from the opening's corners) and on side rails, small ones
-        // on the brackets
-        const float topY = (oy0 + iy0) / 2, topInset = f.topRail * u / 2;
+        // Fasteners, where the manual puts them (mm from the frame's outer edges)
+        const float mmPx = u / 25.4f;
         for (int i = 0; i < f.topFasteners; ++i)
-            fastener(spread(in0 + topInset, in1 - topInset, f.topFasteners, i), topY, kLargeFastenerIn, kRailZ);
+            fastener(spread(ox0 + f.topInsetMm * mmPx, ox1 - f.topInsetMm * mmPx, f.topFasteners, i),
+                     oy0 + f.topDropMm * mmPx, Mm(f.fastenerMm), kRailZ);
+        const float sideZ = f.brackets ? kFlangeLowZ : kRailZ;   // brackets: on the wall flanges
         for (int i = 0; i < f.sideFasteners; ++i)
         {
-            if (f.brackets)
-            {
-                // Down the wall flanges, from level with the top rail to level with the bottom rail
-                const float y = spread(topY, (iy1 + oy1) / 2, f.sideFasteners, i);
-                fastener(wall0, y, kSmallFastenerIn, kFlangeLowZ);
-                fastener(wall1, y, kSmallFastenerIn, kFlangeLowZ);
-            }
-            else
-            {
-                const float y = r[1] + (r[3] - r[1]) * (i + 0.5f) / f.sideFasteners;
-                fastener((ox0 + in0) / 2, y, kLargeFastenerIn, kRailZ);
-                fastener((in1 + ox1) / 2, y, kLargeFastenerIn, kRailZ);
-            }
+            const float y = oy0 + f.sideDropsMm[i] * mmPx;
+            fastener(ox0 + f.sideInsetMm * mmPx, y, Mm(f.fastenerMm), sideZ);
+            fastener(ox1 - f.sideInsetMm * mmPx, y, Mm(f.fastenerMm), sideZ);
         }
-        const float bracketY = (oy1 + lip + by1) / 2;
-        const float inset = f.side * u / 2;
-        for (int i = 0; i < kBracketFasteners; ++i)
-            fastener(spread(ox0 + inset, ox1 - inset, kBracketFasteners, i), bracketY, kSmallFastenerIn, kBracketFaceZ);
+        if (f.bottomBracket)
+        {
+            const float bracketY = (oy1 + lip + by1) / 2;
+            const float inset = f.side * u / 2;
+            for (int i = 0; i < kBracketFasteners; ++i)
+                fastener(spread(ox0 + inset, ox1 - inset, kBracketFasteners, i), bracketY, kBracketFastenerIn, kBracketFaceZ);
+        }
     }
 
     // Console below the center screen, down to the bottom of the window, with
