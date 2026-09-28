@@ -82,18 +82,16 @@ struct Placement
 // panel window enabled, screen 3 moves from the main window to that window.
 std::vector<Placement> Placements(int window, int width, int height);
 
-// The cabinet drawn behind the arcade layout (ArcadeCabinet), in output pixels.
-struct CabinetGeometry
+// One shape of the cabinet drawn behind the arcade layout (ArcadeCabinet), in
+// output pixels.
+struct CabinetShape
 {
-    float screens[3][4];        // forward screens' pictures: left, top, right, bottom
-    int screwsAcross[3];        // screws along each frame's top rail
-    int screwsDown[3];          // screws down each of its side rails
-    float panel[4];             // the touch panel's picture (all 0 when it's in its own window)
-    float frame;                // width of the metal rails on the top and sides of each screen
-    float lip;                  // height of the frame below each screen
-    float consoleTop;           // where the dark console below the screens starts
-    float color[3];             // the cabinet's wall color, 0..1
+    enum Kind { Box, Disc, Gradient } kind;
+    float x0, y0, x1, y1;       // Box, Gradient: left, top, right, bottom. Disc: center x, y and radius (x1)
+    float color[3];             // 0..1 (a Gradient's color at its left edge)
+    float color2[3];            // a Gradient's color at its right edge
 };
 
-// The main window's cabinet for a width x height output. False when it isn't drawn.
-bool GetCabinetGeometry(int width, int height, CabinetGeometry& out);
+// The cabinet (wall, screen frames, brackets, fasteners, console) for a
+// width x height main window, back to front. Empty when it isn't drawn.
+std::vector<CabinetShape> CabinetShapes(int width, int height);
