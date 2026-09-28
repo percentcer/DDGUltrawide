@@ -37,8 +37,10 @@ namespace
     constexpr int kMaxCells = 128;
     constexpr int kMaxPatches = 160;
     constexpr int kCubeScale = 8;           // ambient cube resolution: 1 texel per 8x8 pixels
-    constexpr float kScreenGain = 20.0f;    // screen brightness relative to the room lighting
-    constexpr float kRoomLight = 0.6f;      // the arcade's own lighting
+    // Light levels are physical, in units of the screens' white: a screen emits
+    // exactly what it shows (1 = white = ArcadeCabinetScreenNits), and the output
+    // shows the screens' white as display white, so the pictures look as drawn.
+    // The arcade's own lighting (ArcadeCabinetRoomLux) is converted to match.
 
     const char* kShader = R"(
 #define MAX_CELLS 128
@@ -65,7 +67,9 @@ cbuffer Scene : register(b1)
     float4 counts;                  // cells, patches, cube scale
     float4 view;                    // width, height, pixels per inch
     float4 origin;                  // origin x, y (px)
-    float4 light;                   // screen gain, room light, exposure
+    float4 light;                   // screen light (1), room light (radiance, in screen whites), exposure
+    float4 wall;                    // the cabinet's wall color (linear)
+    float4 geom;                    // the side cabinets' faces: corner (inches from the middle), sin, cos of their turn
 };
 
 Texture2D<float4> t0 : register(t0);
@@ -85,7 +89,21 @@ Texture2D<float4> gloss4 : register(t13);  // looking +z (out, toward the player
 SamplerState linearClamp : register(s0);
 
 static const float GLOSS_POWER = 8;        // the gloss lobes: cos^8
-static const float3 EYE = float3(0, -3, 30);  // the player's eye (inches): centered, a little high, 30" back
+// The seated player's eye (inches from the center picture's middle): about
+// 1200 mm up (the picture's middle is about 1495 mm up) and 800 mm back
+static const float3 EYE = float3(0, 11.6, 31.5);
+static const float3 OVERHEAD = float3(0, -0.894, 0.447);   // toward the arcade's ceiling lights
+
+// Exact sRGB transfer curves (the game's frame and our output are sRGB)
+float3 SrgbToLinear(float3 c)
+{
+    return c <= 0.04045 ? c / 12.92 : pow(abs((c + 0.055) / 1.055), 2.4);
+}
+
+float3 LinearToSrgb(float3 c)
+{
+    return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(abs(c), 1 / 2.4) - 0.055;
+}
 
 // ---- Full-window quad ----
 float4 VSFull(uint id : SV_VertexID) : SV_Position
@@ -162,7 +180,7 @@ float4 PSCells(float4 pos : SV_Position) : SV_Target
 {
     int i = (int)pos.x;
     float3 c = t0.SampleLevel(linearClamp, cellUV[i].xy, cellUV[i].z).rgb;
-    return float4(pow(abs(c), 2.2) * light.x, 1);
+    return float4(SrgbToLinear(saturate(c)) * light.x, 1);
 }
 
 // Light from an area source of radiance L and area A at S facing sn, arriving at
@@ -175,16 +193,59 @@ float3 FromSource(float3 P, float3 S, float3 sn, float A, float3 L, out float3 w
     return L * (A * saturate(dot(sn, -w)) / (d2 + A / PI));
 }
 
-// ---- 2. Patches: light from the cells (t0), reflected ----
-float4 PSPatches(float4 pos : SV_Position) : SV_Target
+// Where an output pixel's surface is in 3D (the cabinet is drawn flat, but past
+// the corner it continues along the side cabinets' faces, which turn toward the
+// player), and its axes: ex along the drawing's x, ez out of the surface
+float3 Place(float2 px, float zLocal, out float3 ex, out float3 ez)
 {
-    int i = (int)pos.x;
+    float2 f = (px - origin.xy) / view.z;
+    ex = float3(1, 0, 0);
+    ez = float3(0, 0, 1);
+    float along = abs(f.x) - geom.x;
+    if (along <= 0) return float3(f, zLocal);
+    float sgn = f.x < 0 ? -1 : 1;
+    ex = float3(geom.z, 0, sgn * geom.y);
+    ez = float3(-sgn * geom.y, 0, geom.z);
+    return float3(sgn * geom.x, f.y, 0) + sgn * ex * along + ez * zLocal;
+}
+
+// A world direction in a surface's own axes
+float3 ToLocal(float3 w, float3 ex, float3 ez)
+{
+    return float3(dot(w, ex), w.y, dot(w, ez));
+}
+
+// ---- 2. Patches: light from the cells (t0) and, after the first pass, from
+// each other (t1, the previous pass), reflected ----
+float3 PatchDirect(int i)
+{
     float3 P = patchPos[i].xyz, N = patchNrm[i].xyz;
     float3 E = 0;
     for (int c = 0; c < (int)counts.x; ++c)
     {
         float3 w;
         float3 e = FromSource(P, cellPos[c].xyz, cellNrm[c].xyz, cellPos[c].w, t0.Load(int3(c, 0, 0)).rgb, w);
+        E += e * saturate(dot(N, w));
+    }
+    return E;
+}
+
+float4 PSPatches(float4 pos : SV_Position) : SV_Target
+{
+    int i = (int)pos.x;
+    return float4(patchAlb[i].rgb * PatchDirect(i) / PI, 1);
+}
+
+float4 PSBounce(float4 pos : SV_Position) : SV_Target
+{
+    int i = (int)pos.x;
+    float3 P = patchPos[i].xyz, N = patchNrm[i].xyz;
+    float3 E = PatchDirect(i);
+    for (int j = 0; j < (int)counts.y; ++j)
+    {
+        if (j == i) continue;
+        float3 w;
+        float3 e = FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w);
         E += e * saturate(dot(N, w));
     }
     return float4(patchAlb[i].rgb * E / PI, 1);
@@ -203,13 +264,14 @@ struct Cube
 
 Cube PSCube(float4 pos : SV_Position)
 {
-    float2 p = pos.xy * counts.z;
-    float3 P = float3((p - origin.xy) / view.z, 0.8);
+    float3 ex, ez;
+    float3 P = Place(pos.xy * counts.z, 0.8, ex, ez);
     float3 c0 = 0, c1 = 0, c2 = 0, c3 = 0, c4 = 0, c5 = 0;
     float3 w, e;
     for (int i = 0; i < (int)counts.x; ++i)
     {
         e = FromSource(P, cellPos[i].xyz, cellNrm[i].xyz, cellPos[i].w, t0.Load(int3(i, 0, 0)).rgb, w);
+        w = ToLocal(w, ex, ez);
         c0 += e * max(w.x, 0); c1 += e * max(-w.x, 0);
         c2 += e * max(w.y, 0); c3 += e * max(-w.y, 0);
         c4 += e * max(w.z, 0); c5 += e * max(-w.z, 0);
@@ -217,6 +279,7 @@ Cube PSCube(float4 pos : SV_Position)
     for (int j = 0; j < (int)counts.y; ++j)
     {
         e = FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w);
+        w = ToLocal(w, ex, ez);
         c0 += e * max(w.x, 0); c1 += e * max(-w.x, 0);
         c2 += e * max(w.y, 0); c3 += e * max(-w.y, 0);
         c4 += e * max(w.z, 0); c5 += e * max(-w.z, 0);
@@ -244,8 +307,8 @@ struct Gloss
 
 Gloss PSGloss(float4 pos : SV_Position)
 {
-    float2 p = pos.xy * counts.z;
-    float3 P = float3((p - origin.xy) / view.z, 0.8);
+    float3 ex, ez;
+    float3 P = Place(pos.xy * counts.z, 0.8, ex, ez);
     float3 g0 = 0, g1 = 0, g2 = 0, g3 = 0, g4 = 0;
     float3 w, e;
     for (int i = 0; i < (int)counts.x + (int)counts.y; ++i)
@@ -257,12 +320,17 @@ Gloss PSGloss(float4 pos : SV_Position)
             int j = i - (int)counts.x;
             e = FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w);
         }
+        w = ToLocal(w, ex, ez);
         g0 += e * pow(max(w.x, 0), GLOSS_POWER); g1 += e * pow(max(-w.x, 0), GLOSS_POWER);
         g2 += e * pow(max(w.y, 0), GLOSS_POWER); g3 += e * pow(max(-w.y, 0), GLOSS_POWER);
         g4 += e * pow(max(w.z, 0), GLOSS_POWER);
     }
-    // Light per solid angle in each lobe, plus the arcade's own lighting
-    float k = (GLOSS_POWER + 1) / (2 * PI), room = light.y;
+    // Light per solid angle in each lobe, plus the arcade's own lighting. The
+    // screens' light carries a gain so their glow holds up against the room
+    // lighting on matte surfaces, but a reflection is only as bright as what it
+    // reflects: take the gain back out, so a reflected screen is no brighter
+    // than the screen itself
+    float k = (GLOSS_POWER + 1) / (2 * PI) / max(light.x, 1e-3), room = light.y;
     Gloss o;
     o.px = float4(g0 * k + room * 0.25, 1); o.nx = float4(g1 * k + room * 0.25, 1);
     o.py = float4(g2 * k + room * 0.15, 1); o.ny = float4(g3 * k + room * 0.9, 1);
@@ -327,30 +395,44 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
     float4 geo = t1.Load(ip);
     float3 mat = t2.Load(ip).xyz;                       // roughness, metalness, powder coat
     float2 nxy = geo.xy * 2 - 1;
-    nxy -= OrangePeel(pos.xy) * mat.z;
+    // Orange peel only on flat faces: on the rounded edges and slopes it would
+    // break up their thin highlights (and isn't visible on a tight radius anyway)
+    float flat = saturate((1 - dot(nxy, nxy) - 0.85) / 0.13);
+    nxy -= OrangePeel(pos.xy) * mat.z * flat;
     float3 n = normalize(float3(nxy, sqrt(saturate(1 - dot(nxy, nxy)))));
     float2 uv = pos.xy / view.xy;
 
     // Seen from the player's eye: the direction to it from this point
-    float3 P = float3((pos.xy - origin.xy) / view.z, geo.z * 16);
-    float3 v = normalize(EYE - P);
+    float3 ex, ez;
+    float3 P = Place(pos.xy, geo.z * 16, ex, ez);
+    float3 v = ToLocal(normalize(EYE - P), ex, ez);
     float nv = saturate(dot(n, v));
 
     // Fresnel (Schlick)
     float3 F0 = lerp(0.04, albedo, mat.y);
     float3 F = F0 + (1 - F0) * pow(1 - nv, 5);
-    // The view, reflected. On steep faces it would point into the wall; keep it
-    // on the room side, where it grazes along the wall instead
+    // The view, reflected. On steep faces (a screw's far flank, a bracket step)
+    // it points back into the wall, where it sees the wall right beside this
+    // point: the wall's color, lit by what falls on it here
     float3 r = 2 * nv * n - v;
-    r = normalize(float3(r.xy, max(r.z, 0.15)));
+    float intoWall = saturate(0.5 - r.z / 0.2);
+    r = normalize(float3(r.xy, max(r.z, 0.05)));
+    float3 wallSeen = wall.rgb * Irradiance(float3(0, 0, 1), uv) / PI;
 
     // Diffuse, less what's reflected; specular from the gloss lobes, blurring
     // toward the ambient cube as the surface gets rougher
     float3 diffuse = albedo * (1 - mat.y) * (1 - F) * Irradiance(n, uv) / PI;
-    float3 specular = F * lerp(Glossy(r, uv), Irradiance(r, uv) / PI, saturate(mat.x * 1.6 - 0.3));
+    float3 env = lerp(Glossy(r, uv), Irradiance(r, uv) / PI, saturate(mat.x * 1.6 - 0.3));
+    float3 specular = F * lerp(env, wallSeen, intoWall);
+
+    // The arcade's ceiling lights, overhead and a little toward the player: a
+    // highlight, crisp on chrome and broad and faint on satin paint
+    float power = exp2(6 * (1 - mat.x) + 1);           // 37 for chrome, 20 for satin
+    specular += F * light.y * 2.5 * pow(saturate(dot(r, OVERHEAD)), power) * (1 - intoWall);
     float3 c = (diffuse + specular) * light.z;
-    c = c / (1 + 0.15 * c);                             // gentle shoulder for bright highlights
-    return float4(pow(saturate(c), 1 / 2.2), 1);
+    // Leave mid-tones alone; roll bright highlights off smoothly instead of clipping
+    c = c < 0.8 ? c : 0.8 + 0.2 * (1 - exp(-(c - 0.8) / 0.2));
+    return float4(LinearToSrgb(saturate(c)), 1);
 }
 )";
 
@@ -363,7 +445,7 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
     {
         float cellPos[kMaxCells][4], cellNrm[kMaxCells][4], cellUV[kMaxCells][4];
         float patchPos[kMaxPatches][4], patchNrm[kMaxPatches][4], patchAlb[kMaxPatches][4];
-        float counts[4], view[4], origin[4], light[4];
+        float counts[4], view[4], origin[4], light[4], wall[4], geom[4];
     };
 
     struct Target
@@ -397,6 +479,7 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
     ID3D11PixelShader* g_psShape = nullptr;
     ID3D11PixelShader* g_psCells = nullptr;
     ID3D11PixelShader* g_psPatches = nullptr;
+    ID3D11PixelShader* g_psBounce = nullptr;
     ID3D11PixelShader* g_psCube = nullptr;
     ID3D11PixelShader* g_psGloss = nullptr;
     ID3D11PixelShader* g_psShade = nullptr;
@@ -408,7 +491,8 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
     ID3D11DepthStencilState* g_dss = nullptr;
     ID3D11SamplerState* g_sampler = nullptr;
 
-    Target g_gbuffer[3], g_cells, g_patches, g_cube[6], g_gloss[5];
+    Target g_gbuffer[3], g_cells, g_patches, g_patches2, g_cube[6], g_gloss[5];
+    constexpr int kBounces = 2;             // patch-to-patch bounces after the direct light
     int g_w = 0, g_h = 0;
     bool g_built = false;       // for g_w x g_h
     bool g_enabled = false;     // the cabinet is drawn at this size
@@ -442,7 +526,7 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
         return ok;
     }
 
-    float ToLinear(float c) { return std::pow(c, 2.2f); }
+    float ToLinear(float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); }
 
     void CommonState(ID3D11DeviceContext* ctx)
     {
@@ -484,6 +568,7 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
         for (Target& t : g_gloss) t.Release();
         g_cells.Release();
         g_patches.Release();
+        g_patches2.Release();
 
         CabinetScene scene;
         if (!GetCabinetScene(w, h, scene)) return;
@@ -497,7 +582,8 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
         for (Target& t : g_cube) ok = ok && t.Create(g_dev, cw, ch, DXGI_FORMAT_R16G16B16A16_FLOAT);
         for (Target& t : g_gloss) ok = ok && t.Create(g_dev, cw, ch, DXGI_FORMAT_R16G16B16A16_FLOAT);
         ok = ok && g_cells.Create(g_dev, g_cellCount, 1, DXGI_FORMAT_R16G16B16A16_FLOAT)
-                && g_patches.Create(g_dev, g_patchCount > 0 ? g_patchCount : 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                && g_patches.Create(g_dev, g_patchCount > 0 ? g_patchCount : 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT)
+                && g_patches2.Create(g_dev, g_patchCount > 0 ? g_patchCount : 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT);
         if (!ok)
         {
             LOG("Could not create the cabinet's lighting targets");
@@ -528,9 +614,14 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
         sc->view[2] = scene.pxPerInch;
         sc->origin[0] = scene.originX;
         sc->origin[1] = scene.originY;
-        sc->light[0] = kScreenGain * g_cfg.cabinetScreenLight;
-        sc->light[1] = kRoomLight * g_cfg.cabinetRoomLight;
+        // Room light as the radiance of a white wall it lights, in screen whites
+        sc->light[0] = 1.0f;
+        sc->light[1] = g_cfg.cabinetRoomLux / (3.14159265f * std::fmax(g_cfg.cabinetScreenNits, 1.0f));
         sc->light[2] = 1.0f;
+        for (int i = 0; i < 3; ++i) sc->wall[i] = ToLinear(g_cfg.cabinetColor[i]);
+        sc->geom[0] = scene.cornerIn;
+        sc->geom[1] = std::sin(scene.faceAngle);
+        sc->geom[2] = std::cos(scene.faceAngle);
         ctx->UpdateSubresource(g_sceneCB, 0, nullptr, sc, 0, 0);
         delete sc;
 
@@ -605,7 +696,7 @@ bool CabinetLightInit(ID3D11Device* dev)
     sd.MaxLOD = D3D11_FLOAT32_MAX;
 
     const bool ok = CreateVS("VSFull", &g_vsFull) && CreateVS("VSShape", &g_vsShape)
-        && CreatePS("PSShape", &g_psShape) && CreatePS("PSCells", &g_psCells) && CreatePS("PSPatches", &g_psPatches)
+        && CreatePS("PSShape", &g_psShape) && CreatePS("PSCells", &g_psCells) && CreatePS("PSPatches", &g_psPatches) && CreatePS("PSBounce", &g_psBounce)
         && CreatePS("PSCube", &g_psCube) && CreatePS("PSGloss", &g_psGloss) && CreatePS("PSShade", &g_psShade)
         && SUCCEEDED(dev->CreateBuffer(&sb, nullptr, &g_shapeCB))
         && SUCCEEDED(dev->CreateBuffer(&cb, nullptr, &g_sceneCB))
@@ -642,13 +733,25 @@ bool CabinetLightRender(ID3D11DeviceContext* ctx, int width, int height,
     ctx->PSSetShaderResources(0, 1, &frame);
     ctx->Draw(4, 0);
 
-    // 2. Booth patches, lit by the cells
+    // 2. Booth patches, lit by the cells, then bouncing between each other
     UnbindSRVs(ctx);
     ctx->OMSetRenderTargets(1, &g_patches.rtv, nullptr);
     Viewport(ctx, g_patchCount > 0 ? g_patchCount : 1, 1);
     ctx->PSSetShader(g_psPatches, nullptr, 0);
     ctx->PSSetShaderResources(0, 1, &g_cells.srv);
     ctx->Draw(4, 0);
+    Target* prev = &g_patches;
+    Target* next = &g_patches2;
+    ctx->PSSetShader(g_psBounce, nullptr, 0);
+    for (int b = 0; b < kBounces; ++b)
+    {
+        UnbindSRVs(ctx);
+        ctx->OMSetRenderTargets(1, &next->rtv, nullptr);
+        ID3D11ShaderResourceView* in[2] = { g_cells.srv, prev->srv };
+        ctx->PSSetShaderResources(0, 2, in);
+        ctx->Draw(4, 0);
+        Target* t = prev; prev = next; next = t;
+    }
 
     // 3. Ambient cube, from the cells and patches
     UnbindSRVs(ctx);
@@ -657,7 +760,7 @@ bool CabinetLightRender(ID3D11DeviceContext* ctx, int width, int height,
     ctx->OMSetRenderTargets(6, cubes, nullptr);
     Viewport(ctx, (width + kCubeScale - 1) / kCubeScale, (height + kCubeScale - 1) / kCubeScale);
     ctx->PSSetShader(g_psCube, nullptr, 0);
-    ID3D11ShaderResourceView* sources[2] = { g_cells.srv, g_patches.srv };
+    ID3D11ShaderResourceView* sources[2] = { g_cells.srv, prev->srv };
     ctx->PSSetShaderResources(0, 2, sources);
     ctx->Draw(4, 0);
 

@@ -27,8 +27,8 @@ struct Config
     float panelScaling = 0.75f;         // touch panel size, relative to a third of the output's height
     bool arcadeCabinet = true;          // draw the cabinet (wall, screen frames, console) around the screens
     float cabinetColor[3] = { 0xBA / 255.0f, 0xB3 / 255.0f, 0xA5 / 255.0f };   // the cabinet's beige-gray
-    float cabinetScreenLight = 1.0f;    // how strongly the game screens light the cabinet (0 = not at all)
-    float cabinetRoomLight = 1.0f;      // the arcade's own lighting on the cabinet
+    float cabinetScreenNits = 1000.0f;  // the screens' white, cd/m^2
+    float cabinetRoomLux = 0.0f;        // the arcade's own lighting falling on the cabinet, lux (0 = none)
 
     // [Source] S0..: where each screen is in the game's own frame
     std::vector<Rect> sources;
@@ -126,6 +126,8 @@ struct CabinetScene
     std::vector<CabinetEmitter> patches;    // the booth's walls, ceiling and floor, lit by the cells
     float pxPerInch;
     float originX, originY;                 // the origin, in output pixels
+    float cornerIn;                         // where the side cabinets' faces start, inches either side of the middle
+    float faceAngle;                        // how far they turn toward the player (radians)
 };
 
 // The cabinet (wall, screen frames, brackets, fasteners, console) and its

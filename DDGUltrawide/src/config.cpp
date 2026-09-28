@@ -167,8 +167,8 @@ void LoadConfig(const std::wstring& ini)
     if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeTouchPanelScaling", L""), scaling)) g_cfg.panelScaling = scaling;
     g_cfg.arcadeCabinet = ReadInt(ini, L"Layout", L"ArcadeCabinet", 1) != 0;
     float light;
-    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetScreenLight", L""), light)) g_cfg.cabinetScreenLight = std::fmax(light, 0.0f);
-    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetRoomLight", L""), light)) g_cfg.cabinetRoomLight = std::fmax(light, 0.0f);
+    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetScreenNits", L""), light)) g_cfg.cabinetScreenNits = std::fmax(light, 1.0f);
+    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetRoomLux", L""), light)) g_cfg.cabinetRoomLux = std::fmax(light, 0.0f);
     const std::wstring color = ReadString(ini, L"Layout", L"ArcadeCabinetColor", L"");
     if (!color.empty() && !ParseColor(color, g_cfg.cabinetColor))
         LOG("Bad [Layout] ArcadeCabinetColor: %ls (using the default)", color.c_str());
@@ -489,21 +489,28 @@ namespace
     constexpr float kRoundedEdgeIn = 0.12f;     // rounded-over edges of rails and the console
     constexpr float kSeamDepthIn = 0.3f;        // how far a seam's groove goes in
 
-    // The booth around the cabinet, which the screens light and which lights the
-    // cabinet in turn: its back wall behind the player, side walls, ceiling and floor
-    constexpr float kBoothDepthIn = 70.0f;      // wall to back wall
-    constexpr float kBoothSideIn = 8.0f;        // side walls, beyond the outer frames
-    constexpr float kBoothCeilingIn = 10.0f;    // ceiling, above the center screen's frame
-    constexpr float kBoothFloorIn = 45.0f;      // floor, below the center screen's picture
-    constexpr float kFloorAlbedo = 0.08f;       // dark carpet (linear)
+    // The booth, from the manual (page 10: 2600 x 1590 x 2160 mm overall; the
+    // plan view and the units' sizes). The front row is a side cabinet, the center
+    // cabinet and a side cabinet (650 + 1300 + 650 = 2600 mm), so the flat layout's
+    // corner (where the side frames meet the center frame) is the real corner. The
+    // side cabinets' faces turn 55 degrees toward the player from there (the plan's
+    // diagonals; their 1035 x 650 mm footprint gives 58). Inside: side walls 1191 mm
+    // either side of the middle, the back wall (the seat cabinet) 1317 mm behind the
+    // screens, and the ceiling (under the ~90 mm roof) about 2070 mm up. The center
+    // picture's middle is about 1495 mm up (the monitor ends 6 mm below the 1840 mm
+    // center cabinet's top). All of it is the cabinet's paint; the floor is dark.
+    constexpr float kFaceAngleDeg = 55.0f;
+    constexpr float kBoothHalfWidthMm = 1191.0f;
+    constexpr float kBackWallMm = 1317.0f;
+    constexpr float kCeilingMm = 2070.0f;
+    constexpr float kPictureCenterMm = 1495.0f;
+    constexpr float kFloorAlbedo = 0.08f;       // linear
 
-    // The side screens face in toward the player a little, as on the cabinet
-    constexpr float kSideScreenAngleDeg = 25.0f;
     // Light cells per screen (across, down)
     constexpr int kCellsForward[2] = { 8, 4 };
     constexpr int kCellsPanel[2] = { 4, 2 };
 
-    float ToLinear(float c) { return std::pow(c, 2.2f); }
+    float ToLinear(float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); }
 }
 
 bool GetCabinetScene(int width, int height, CabinetScene& scene)
@@ -544,7 +551,7 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
     const Material wallPaint = paint(1.0f), railPaint = paint(1.04f), seamPaint = paint(0.6f);
     const Material blackPlastic = { { 0.03f, 0.03f, 0.035f }, 0.45f, 0.0f, false };
     const Material consolePlastic = { { 0.07f, 0.075f, 0.08f }, 0.5f, 0.0f, false };
-    const Material steel = { { 0.62f, 0.62f, 0.63f }, 0.3f, 1.0f, false };
+    const Material chrome = { { 0.80f, 0.80f, 0.81f }, 0.3f, 1.0f, false };   // the screws: chrome, about 60% reflective
 
     std::vector<CabinetShape>& shapes = scene.shapes;
     auto px = [](float v) { return static_cast<float>(std::floor(v + 0.5f)); };
@@ -572,7 +579,7 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
     auto fastener = [&](float x, float y, float diameter, float z)
     {
         const float r = diameter * u / 2;
-        add({ CabinetShape::Dome, x, y, r, 0, z, z, diameter * 0.3f, 0 }, steel);
+        add({ CabinetShape::Dome, x, y, r, 0, z, z, diameter * 0.3f, 0 }, chrome);
     };
     // n points spread evenly from a to b, ends included (the middle when n = 1)
     auto spread = [](float a, float b, int n, int i) { return n <= 1 ? (a + b) / 2 : a + (b - a) * i / (n - 1); };
@@ -664,32 +671,62 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
         box(p[0] - m, p[1] - m, p[2] + m, p[3] + m, kConsoleZ + 0.2f, blackPlastic, kRoundedEdgeIn);
     }
 
+    // The cabinet in 3D, for the lighting (it's drawn flat): past the corner,
+    // the flat layout continues along the side cabinets' faces, which turn
+    // toward the player. place() gives a point's 3D position and its surface's
+    // axes (ex: along the flat layout's x, ez: out of the surface).
+    const float corner = inX(pic[1][2] + FrameSideIn(1) * u);   // the corner, inches from the middle
+    const float faceAngle = kFaceAngleDeg * 3.14159265f / 180;
+    const float ca = std::cos(faceAngle), sa = std::sin(faceAngle);
+    scene.cornerIn = corner;
+    scene.faceAngle = faceAngle;
+    struct Placed { float p[3], ex[3], ez[3]; };
+    auto place = [&](float fx, float fy, float zLocal)
+    {
+        Placed q = { { fx, fy, zLocal }, { 1, 0, 0 }, { 0, 0, 1 } };
+        const float ax = std::fabs(fx);
+        if (ax > corner)
+        {
+            const float sgn = fx < 0 ? -1.0f : 1.0f, along = ax - corner;
+            const float ex[3] = { ca, 0, sgn * sa }, ez[3] = { -sgn * sa, 0, ca };
+            for (int k = 0; k < 3; ++k)
+            {
+                q.ex[k] = ex[k];
+                q.ez[k] = ez[k];
+                q.p[k] = (k == 0 ? sgn * corner : k == 1 ? fy : 0.0f) + sgn * ex[k] * along + ez[k] * zLocal;
+            }
+        }
+        return q;
+    };
+
     // Light cells: each screen cut into a grid of small area lights, each taking
     // its color from the matching part of the game's frame
     const float frameW = g_cfg.renderW > 0 ? static_cast<float>(g_cfg.renderW) : 3840.0f;
     const float frameH = g_cfg.renderH > 0 ? static_cast<float>(g_cfg.renderH) : 2160.0f;
-    const float angle = kSideScreenAngleDeg * 3.14159265f / 180;
     for (int s = 0; s < 4; ++s)
     {
         if (!has[s]) continue;
         const float* r = pic[s];
         const bool panel = s == kTouchPanelScreen;
         const int nx = panel ? kCellsPanel[0] : kCellsForward[0], ny = panel ? kCellsPanel[1] : kCellsForward[1];
-        float normal[3] = { 0, 0, 1 };
-        if (s == 0) { normal[0] = std::sin(angle); normal[2] = std::cos(angle); }
-        if (s == 2) { normal[0] = -std::sin(angle); normal[2] = std::cos(angle); }
-        if (panel) { normal[1] = -0.6f; normal[2] = 0.8f; }       // lies in the console, facing up and out
-        const float z = panel ? kConsoleZ : kGlassZ;
         const float cellW = (r[2] - r[0]) / nx / u, cellH = (r[3] - r[1]) / ny / u;
         const float texels = std::fmax(src[s].sizeX * frameW / nx, src[s].sizeY * frameH / ny);
         for (int j = 0; j < ny; ++j)
             for (int i = 0; i < nx; ++i)
             {
                 CabinetEmitter c = {};
-                c.pos[0] = inX(r[0] + (r[2] - r[0]) * (i + 0.5f) / nx);
-                c.pos[1] = inY(r[1] + (r[3] - r[1]) * (j + 0.5f) / ny);
-                c.pos[2] = z;
-                for (int k = 0; k < 3; ++k) c.normal[k] = normal[k];
+                const float fx = inX(r[0] + (r[2] - r[0]) * (i + 0.5f) / nx), fy = inY(r[1] + (r[3] - r[1]) * (j + 0.5f) / ny);
+                if (panel)
+                {
+                    // Lies in the console, facing up and out
+                    c.pos[0] = fx; c.pos[1] = fy; c.pos[2] = kConsoleZ;
+                    c.normal[1] = -0.6f; c.normal[2] = 0.8f;
+                }
+                else
+                {
+                    const Placed q = place(fx, fy, kGlassZ);
+                    for (int k = 0; k < 3; ++k) { c.pos[k] = q.p[k]; c.normal[k] = q.ez[k]; }
+                }
                 c.area = cellW * cellH;
                 c.uv[0] = src[s].originX + src[s].sizeX * (i + 0.5f) / nx;
                 c.uv[1] = src[s].originY + src[s].sizeY * (j + 0.5f) / ny;
@@ -698,15 +735,25 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
             }
     }
 
-    // Booth patches: a box around the cabinet (back wall, side walls, ceiling,
-    // floor), each face cut into a grid
-    const float bx0 = inX(frameLeft) - kBoothSideIn, bx1 = inX(frameRight) + kBoothSideIn;
-    const float by0 = inY(frameTop) - kBoothCeilingIn, by1 = inY(pic[1][3]) + kBoothFloorIn;
-    const float bz = kBoothDepthIn;
+    // Booth patches: the booth's surfaces cut into grids. They're lit by the
+    // cells and by each other (several bounces), and light the cabinet.
+    const float mmIn = 1 / 25.4f;
+    const float halfW = kBoothHalfWidthMm * mmIn, back = kBackWallMm * mmIn;
+    const float ceilY = -(kCeilingMm - kPictureCenterMm) * mmIn, floorY = kPictureCenterMm * mmIn;
+    const float faceLen = (halfW - corner) / ca;                  // along each side cabinet's face, to the side wall
+    const float faceEndZ = faceLen * sa;
     const float wallLin[3] = { ToLinear(wall[0]), ToLinear(wall[1]), ToLinear(wall[2]) };
     const float floorLin[3] = { kFloorAlbedo, kFloorAlbedo, kFloorAlbedo };
-    // A face spanned by corner + a*axisA + b*axisB, cut into na x nb patches
-    auto face = [&](const float corner[3], const float axisA[3], const float axisB[3], int na, int nb,
+    const float glassLin[3] = { 0.03f, 0.03f, 0.03f };           // a screen's glass, or the dark console
+    auto addPatch = [&](const float pos[3], const float normal[3], float area, const float albedo[3])
+    {
+        CabinetEmitter p = {};
+        for (int k = 0; k < 3; ++k) { p.pos[k] = pos[k]; p.normal[k] = normal[k]; p.albedo[k] = albedo[k]; }
+        p.area = area;
+        scene.patches.push_back(p);
+    };
+    // A flat face spanned by corner + a*axisA + b*axisB, cut into na x nb patches
+    auto face = [&](const float c0[3], const float axisA[3], const float axisB[3], int na, int nb,
                     const float normal[3], const float albedo[3])
     {
         const float lenA = std::sqrt(axisA[0] * axisA[0] + axisA[1] * axisA[1] + axisA[2] * axisA[2]);
@@ -714,28 +761,51 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
         for (int j = 0; j < nb; ++j)
             for (int i = 0; i < na; ++i)
             {
-                CabinetEmitter p = {};
-                for (int k = 0; k < 3; ++k)
-                {
-                    p.pos[k] = corner[k] + axisA[k] * (i + 0.5f) / na + axisB[k] * (j + 0.5f) / nb;
-                    p.normal[k] = normal[k];
-                    p.albedo[k] = albedo[k];
-                }
-                p.area = lenA / na * lenB / nb;
-                scene.patches.push_back(p);
+                float pos[3];
+                for (int k = 0; k < 3; ++k) pos[k] = c0[k] + axisA[k] * (i + 0.5f) / na + axisB[k] * (j + 0.5f) / nb;
+                addPatch(pos, normal, lenA / na * lenB / nb, albedo);
             }
     };
+    // Is a flat-layout point (inches) on a screen or the console? Those parts of
+    // the front are dark rather than painted.
+    auto dark = [&](float fx, float fy)
     {
-        const float back[3] = { bx0, by0, bz }, backA[3] = { bx1 - bx0, 0, 0 }, backB[3] = { 0, by1 - by0, 0 }, backN[3] = { 0, 0, -1 };
-        face(back, backA, backB, 8, 4, backN, wallLin);
-        const float left[3] = { bx0, by0, 0 }, sideA[3] = { 0, 0, bz }, sideB[3] = { 0, by1 - by0, 0 }, leftN[3] = { 1, 0, 0 };
-        face(left, sideA, sideB, 4, 4, leftN, wallLin);
-        const float right[3] = { bx1, by0, 0 }, rightN[3] = { -1, 0, 0 };
-        face(right, sideA, sideB, 4, 4, rightN, wallLin);
-        const float ceil[3] = { bx0, by0, 0 }, flatA[3] = { bx1 - bx0, 0, 0 }, flatB[3] = { 0, 0, bz }, ceilN[3] = { 0, 1, 0 };
-        face(ceil, flatA, flatB, 8, 4, ceilN, wallLin);
-        const float floor_[3] = { bx0, by1, 0 }, floorN[3] = { 0, -1, 0 };
-        face(floor_, flatA, flatB, 8, 4, floorN, floorLin);
+        const float x = scene.originX + fx * u, y = scene.originY + fy * u;
+        for (int s = 0; s < 3; ++s)
+            if (has[s] && x >= pic[s][0] && x <= pic[s][2] && y >= pic[s][1] && y <= pic[s][3]) return true;
+        return y >= consoleTop && std::fabs(fx) <= corner;
+    };
+    {
+        const float h = floorY - ceilY;
+        const float backC[3] = { -halfW, ceilY, back }, backA[3] = { 2 * halfW, 0, 0 }, backB[3] = { 0, h, 0 }, backN[3] = { 0, 0, -1 };
+        face(backC, backA, backB, 8, 4, backN, wallLin);
+        const float sideA[3] = { 0, 0, back - faceEndZ }, sideB[3] = { 0, h, 0 };
+        const float leftC[3] = { -halfW, ceilY, faceEndZ }, leftN[3] = { 1, 0, 0 };
+        face(leftC, sideA, sideB, 3, 4, leftN, wallLin);
+        const float rightC[3] = { halfW, ceilY, faceEndZ }, rightN[3] = { -1, 0, 0 };
+        face(rightC, sideA, sideB, 3, 4, rightN, wallLin);
+        const float ceilC[3] = { -halfW, ceilY, 0 }, flatA[3] = { 2 * halfW, 0, 0 }, flatB[3] = { 0, 0, back }, ceilN[3] = { 0, 1, 0 };
+        face(ceilC, flatA, flatB, 6, 4, ceilN, wallLin);
+        const float floorC[3] = { -halfW, floorY, 0 }, floorN[3] = { 0, -1, 0 };
+        face(floorC, flatA, flatB, 6, 4, floorN, floorLin);
+
+        // The front: the center wall (4 x 5), and each side cabinet's face (3 x 4)
+        const int fcx = 4, fcy = 5;
+        for (int j = 0; j < fcy; ++j)
+            for (int i = 0; i < fcx; ++i)
+            {
+                const float fx = -corner + 2 * corner * (i + 0.5f) / fcx, fy = ceilY + h * (j + 0.5f) / fcy;
+                const float pos[3] = { fx, fy, 0 }, n[3] = { 0, 0, 1 };
+                addPatch(pos, n, 2 * corner / fcx * h / fcy, dark(fx, fy) ? glassLin : wallLin);
+            }
+        for (int side = -1; side <= 1; side += 2)
+            for (int j = 0; j < 4; ++j)
+                for (int i = 0; i < 3; ++i)
+                {
+                    const float fx = side * (corner + faceLen * (i + 0.5f) / 3), fy = ceilY + h * (j + 0.5f) / 4;
+                    const Placed q = place(fx, fy, 0);
+                    addPatch(q.p, q.ez, faceLen / 3 * h / 4, dark(fx, fy) ? glassLin : wallLin);
+                }
     }
     return true;
 }
