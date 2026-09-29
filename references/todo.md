@@ -1,0 +1,29 @@
+## software
+- draw speaker grills
+- draw the flanges visible on the top of hood
+- draw that vertical seam visible near left panel
+- consider drawing the fasteners along the top panel
+- consider drawing the seam along the top panel
+- fix ordering of comp > distortion, we're leaving resolution on the table
+- fix errant reflections from touch panel (side panels wouldn't actually see it)
+- figure out what to do with the touch panel when in arcade mode with external monitor (draw less of the console? keep it and duplicate?)
+- performance pass
+- use a pre-captured env map to provide more interesting reflections
+
+## physical
+- measure actual thickness of acrylic
+- measure profile of the bottom side panel brackets
+- measure console depth
+- measure console angle
+- measure screen angles
+- measure inset/recess of screens from wall (or acrlyic)
+- measure player height when seated
+- measure panel inset below side screens
+- get detail shots of screw heads
+- capture splat of cabinet interior
+- capture different lighting conditions in cabinet
+- detailed shots of acrylic reflection (warping, blur, fingerprint smudges)
+- detailed shots of powder coating texture
+- detailed shots of overhead lights
+- do the overhead lights react to the game?
+- detailed pictures of interior cabinet stickers (underneath the side screens)
