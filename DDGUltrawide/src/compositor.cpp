@@ -728,6 +728,21 @@ float4 PSWarp(VSOut i) : SV_Target
         ID3D11ShaderResourceView* nullSRV = nullptr;
         g_ctx->PSSetShaderResources(0, 1, &nullSRV);
 
+        // The acrylic sheets over the screens, then our own state back for the warp
+        const bool acrylic = cabinet && CabinetLightReflect(g_ctx, target);
+        if (acrylic && !perspective) CabinetLightHood(g_ctx, target, o.w, o.h, 0, false);
+        if (acrylic)
+        {
+            g_ctx->RSSetState(g_rs);
+            g_ctx->OMSetBlendState(g_blend, nullptr, 0xFFFFFFFF);
+            g_ctx->OMSetDepthStencilState(g_dss, 0);
+            g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            g_ctx->VSSetShader(g_vs, nullptr, 0);
+            g_ctx->VSSetConstantBuffers(0, 1, &g_cb);
+            g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
+            g_ctx->PSSetSamplers(0, 1, &g_samp);
+        }
+
         if (perspective)
         {
             // The warp: the whole window, sampling the canvas
@@ -758,6 +773,8 @@ float4 PSWarp(VSOut i) : SV_Target
             g_ctx->PSSetShaderResources(0, 1, &g_canvasSRV);
             g_ctx->Draw(4, 0);
             g_ctx->PSSetShaderResources(0, 1, &nullSRV);
+            // The hood, seen from the camera, over the warped view
+            if (acrylic) CabinetLightHood(g_ctx, o.rtv, o.w, o.h, offset, true);
         }
     }
 

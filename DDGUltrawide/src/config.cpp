@@ -355,6 +355,37 @@ namespace
     constexpr int kBracketFasteners = 3;        // along the bottom bracket: both ends and the middle
     constexpr float kPanelSurroundIn = 0.5f;    // black surround of the touch panel in the console
 
+    // The acrylic "MONITOR PANEL"s (PMMA, per the parts lists), about half an
+    // inch thick. The side screens' covers their whole frame (994.4 x 598.3 mm),
+    // screwed on over the rails. The center screen's spans the picture between
+    // its brackets, from the frame's top to its bottom, on 5.5 mm spacers over
+    // the brackets' raised flanges.
+    constexpr float kAcrylicIn = 0.5f;
+
+    // The hood under the center screen: HOOD-L and HOOD-R (boxes of black
+    // painted steel, rounded over along their top outer edges, the front
+    // speakers set into their fronts) and HOOD-(CENTER) (a plate between them,
+    // over the touch monitor). It reaches out from the center screen toward the
+    // player at about shoulder height, its top covering the bottom 1/30 of the
+    // picture (measured on a real cabinet). From the manual's front view of the
+    // center cabinet (page 124, to scale): 1300 mm across, its front showing
+    // 245 mm down to the control panel's front edge, the pieces meeting 340 mm
+    // in from each end, the speaker grilles 75 to 290 mm in and 44 to 211 mm
+    // down, and the touch monitor's opening 481 x 183 mm, 40 mm down. From the
+    // exploded views (page 122; estimated): about 350 mm deep, its front
+    // leaning back about 75 mm over its 317 mm height.
+    constexpr float kHoodCoverFraction = 1.0f / 30;
+    constexpr float kHoodFaceMm = 245.0f;
+    constexpr float kHoodHeightMm = 317.0f;
+    constexpr float kHoodDepthMm = 350.0f;
+    constexpr float kHoodLeanMm = 75.0f;
+    constexpr float kHoodCornerMm = 30.0f;
+    constexpr float kHoodSplitMm = 340.0f;
+    constexpr float kHoodGrilleMm[4] = { 75.0f, 44.0f, 290.0f, 211.0f };      // in from the end, down: from, to
+    constexpr float kTouchOpeningMm[3] = { 481.0f, 183.0f, 40.0f };           // width, height, down from the top
+    constexpr float kHoodAlbedo = 0.045f;       // black paint (sRGB)
+    constexpr float kCenterAcrylicSpacerIn = 5.5f / 25.4f;
+
     // Room each screen's frame takes around its picture, in inches
     constexpr float FrameSideIn(int s) { return kFrames[s].side + kFrames[s].border; }
     constexpr float FrameAboveIn(int s) { return kFrames[s].topRail + kFrames[s].border; }
@@ -437,10 +468,23 @@ namespace
         // window: its frame (with the panel below) fits the height, and the
         // frame out to the corners the width.
         float middleY = 0;                                                               // the center picture's middle
+        float panelTopY = 0;                                                             // the panel's top, from the picture's middle
         if (perspective)
         {
-            const float colAbove = 9.0f / 32.0f + aboveScale, colBelow = 9.0f / 32.0f + belowScale;
             const float camera = CameraIn() / kCenterWidthInches;                        // in center widths
+            const float colAbove = 9.0f / 32.0f + aboveScale;
+            float colBelow = 9.0f / 32.0f + belowScale;
+            if (withPanel)
+            {
+                // The panel goes where the hood's opening shows: past the hood's
+                // top, as seen from the camera, and down its front
+                const float cw = kCenterWidthInches * 25.4f;                             // mm per center width
+                const float down = kTouchOpeningMm[2];
+                const float y = 9.0f / 32.0f - 9.0f / 16.0f * kHoodCoverFraction + down / cw;
+                const float z = (kHoodDepthMm + kHoodLeanMm * down / kHoodHeightMm) / cw;
+                colBelow = std::fmax(colBelow, y * camera / std::fmax(camera - z, 0.01f));
+            }
+            panelTopY = colBelow;
             if (g_cfg.arcadeFovDeg > 0)
                 centerW = W / (2 * camera * std::tan(g_cfg.arcadeFovDeg * 3.14159265f / 360));
             else
@@ -478,7 +522,7 @@ namespace
         float top = (overlap ? 0.0f : (H - (centerW * rowHeight + panelH)) / 2) + above;
         if (perspective) top = middleY - centerW * 9.0f / 32.0f;
         const float bottom = top + centerH;    // shared bottom edge of the forward screens
-        const float panelTop = overlap ? H - panelH : bottom + below;
+        const float panelTop = overlap ? H - panelH : perspective ? middleY + centerW * panelTopY : bottom + below;
 
         // Pixel edges, left to right: left screen, frames and gap, center screen, frames and gap, right screen
         auto px = [](float v) { return static_cast<float>(std::floor(v + 0.5f)); };
@@ -675,6 +719,10 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
         frameRight = std::fmax(frameRight, ox1);
         frameTop = std::fmin(frameTop, oy0);
 
+        // The acrylic over it all
+        if (f.brackets) scene.acrylics.push_back({ in0, oy0, in1, oy1, kFlangeHighZ + kCenterAcrylicSpacerIn + kAcrylicIn });
+        else scene.acrylics.push_back({ ox0, oy0, ox1, oy1, kRailZ + kAcrylicIn });
+
         // Rails (one piece on the side screens), and the monitor's border in the opening
         box(ox0, oy0, ox1, oy1, kRailZ, railPaint, kRoundedEdgeIn);
         if (f.border > 0) box(in0, iy0, in1, iy1, kBorderZ, blackPlastic);
@@ -730,17 +778,27 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
         }
     }
 
-    // Console below the center screen, down to the bottom of the window, with
-    // the touch panel set into it in a black surround
+    // Console below the center screen, down to the bottom of the window. The
+    // hood over it, and the touch panel's surround, are drawn over everything
+    // later, in 3D (CabinetLightHood); this is what's under it.
     const float cx0 = pic[1][0] - FrameSideIn(1) * u, cx1 = pic[1][2] + FrameSideIn(1) * u;
     const float consoleTop = pic[1][3] + FrameBelowIn(1) * u;
     box(cx0, consoleTop, cx1, H, kConsoleZ, consolePlastic, kRoundedEdgeIn * 2);
+    scene.hoodTop = inY(pic[1][3]) - (pic[1][3] - pic[1][1]) / u * kHoodCoverFraction;
+    scene.hoodDepth = Mm(kHoodDepthMm);
+    scene.hoodSlope = kHoodLeanMm / kHoodHeightMm;
+    scene.hoodHeight = Mm(kHoodHeightMm);
+    scene.hoodFace = Mm(kHoodFaceMm);
+    scene.hoodSplit = Mm(kHoodSplitMm);
+    for (int i = 0; i < 4; ++i) scene.hoodGrille[i] = Mm(kHoodGrilleMm[i]);
+    scene.hoodCorner = Mm(kHoodCornerMm);
+    scene.hoodOpening[0] = Mm(kTouchOpeningMm[0] / 2);
+    scene.hoodOpening[1] = Mm(kTouchOpeningMm[2]);
+    scene.hoodOpening[2] = Mm(kTouchOpeningMm[2] + kTouchOpeningMm[1]);
+    scene.hoodAlbedo = ToLinear(kHoodAlbedo);
     if (has[kTouchPanelScreen])
-    {
-        const float* p = pic[kTouchPanelScreen];
-        const float m = kPanelSurroundIn * u;
-        box(p[0] - m, p[1] - m, p[2] + m, p[3] + m, kConsoleZ + 0.2f, blackPlastic, kRoundedEdgeIn);
-    }
+        for (int i = 0; i < 4; ++i) scene.panelRect[i] = pic[kTouchPanelScreen][i];
+    scene.panelSurround = kPanelSurroundIn * u;
 
     // The cabinet in 3D, for the lighting (it's drawn flat): past the corner,
     // the flat layout continues along the side cabinets' faces, which turn
@@ -813,6 +871,18 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
     const float ceilY = -(kCeilingMm - kPictureCenterMm) * mmIn, floorY = kPictureCenterMm * mmIn;
     const float faceLen = (halfW - corner) / ca;                  // along each side cabinet's face, to the side wall
     const float faceEndZ = faceLen * sa;
+    scene.faceLenIn = faceLen;
+    scene.boothHalfWidth = halfW;
+    scene.boothBack = back;
+    scene.boothCeiling = ceilY;
+    scene.boothFloor = floorY;
+    scene.floorAlbedo = kFloorAlbedo;
+    scene.acrylicIn = kAcrylicIn;
+    // Who's looking: the perspective view's camera, or else the seated player
+    // (about 1200 mm up and 800 mm back)
+    scene.eye[0] = 0;
+    scene.eye[1] = PerspectiveOn() ? 0.0f : 11.6f;
+    scene.eye[2] = PerspectiveOn() ? CameraIn() : 31.5f;
     const float wallLin[3] = { ToLinear(wall[0]), ToLinear(wall[1]), ToLinear(wall[2]) };
     const float floorLin[3] = { kFloorAlbedo, kFloorAlbedo, kFloorAlbedo };
     const float glassLin[3] = { 0.03f, 0.03f, 0.03f };           // a screen's glass, or the dark console

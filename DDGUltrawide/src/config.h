@@ -121,15 +121,42 @@ struct CabinetEmitter
 };
 
 // Everything the cabinet's lighting needs for a width x height main window.
+// A clear acrylic sheet over a screen and its frame, which reflects the booth
+struct CabinetAcrylic
+{
+    float x0, y0, x1, y1;                   // output pixels
+    float z;                                // its front face (inches out from the wall)
+};
+
 struct CabinetScene
 {
     std::vector<CabinetShape> shapes;       // back to front
     std::vector<CabinetEmitter> cells;      // the game screens, cut into small area lights
     std::vector<CabinetEmitter> patches;    // the booth's walls, ceiling and floor, lit by the cells
+    std::vector<CabinetAcrylic> acrylics;   // drawn over the screens
     float pxPerInch;
     float originX, originY;                 // the origin, in output pixels
     float cornerIn;                         // where the side cabinets' faces start, inches either side of the middle
     float faceAngle;                        // how far they turn toward the player (radians)
+    float faceLenIn;                        // how far those faces run, to the booth's side walls
+    // The booth, in inches from the center picture's middle (y down, z toward the player)
+    float boothHalfWidth, boothBack, boothCeiling, boothFloor;
+    float floorAlbedo;                      // linear
+    float eye[3];                           // who's looking, for reflections
+    float acrylicIn;                        // the acrylic sheets' thickness
+    // The hood under the center screen (drawn over everything, in 3D; it spans
+    // the center cabinet, corner to corner), in inches: its top (y), how far out
+    // it comes, how far its front leans back (inches out per inch down), how
+    // tall that front is and how much of it shows above the control panel,
+    // where its pieces meet (in from each end), its speaker grilles (in from
+    // each end and down its front: from, to), its rounded top outer corners'
+    // radius, the touch monitor's opening (half width; down its front: from,
+    // to), and its paint's albedo (linear)
+    float hoodTop, hoodDepth, hoodSlope, hoodHeight, hoodFace, hoodSplit;
+    float hoodGrille[4], hoodCorner, hoodOpening[3], hoodAlbedo;
+    // The touch panel, if it's in this window (output pixels; else all 0), and
+    // the black surround it sits in (pixels)
+    float panelRect[4], panelSurround;
 };
 
 // The cabinet (wall, screen frames, brackets, fasteners, console) and its

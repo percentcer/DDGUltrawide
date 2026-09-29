@@ -23,6 +23,15 @@
 //      takes diffuse light from the ambient cube by its normal, and specular
 //      light from the gloss by its reflection, with Fresnel. Powder-coated
 //      surfaces also get a fine orange-peel texture in their normals.
+//   6. Booth map: each booth surface's own look (the light on it, times its
+//      color) as a small grid, for reflections.
+//   7. Acrylic, once the screens are drawn: each pixel under a sheet follows
+//      its reflection off the sheet's front and back faces to what it hits:
+//      the booth (from the booth map), the hood, or the front of the cabinet
+//      itself (the screens and frames, as just drawn).
+//   8. The hood, last: each pixel's view is traced to the hood (a box reaching
+//      out under the center screen), which takes its own light from the booth
+//      map and glossily reflects the rest.
 // The G-buffer (each pixel's color, normal and material) is drawn once from the
 // cabinet's shapes, and again only when the window size changes.
 
@@ -53,7 +62,7 @@ cbuffer Shape : register(b0)
     float4 sParams;     // z0, z1, edge, kind (0 box, 1 ramp, 2 dome)
     float4 sAlbedo;     // linear rgb, ramp axis
     float4 sMat;        // roughness, metalness, pixels per inch, powder coat
-    float4 sTarget;     // target width, height
+    float4 sTarget;     // target width, height; the hood: its canvas's offset, perspective
 };
 
 cbuffer Scene : register(b1)
@@ -70,6 +79,15 @@ cbuffer Scene : register(b1)
     float4 light;                   // screen light (1), room light (radiance, in screen whites), exposure
     float4 wall;                    // the cabinet's wall color (linear)
     float4 geom;                    // the side cabinets' faces: corner (inches from the middle), sin, cos of their turn
+    float4 booth;                   // half width, back wall z, ceiling y, floor y (inches)
+    float4 booth2;                  // where the side walls start (z), floor albedo, the side faces' length
+    float4 eye;                     // the viewer (inches), the acrylic's thickness
+    float4 hood;                    // the hood under the center screen: half width, top y, depth, slope
+    float4 hood2;                   // its front's height, how much of it shows, where its pieces meet, albedo
+    float4 hoodGrille;              // its speaker grilles: in from each end, down its front (from, to)
+    float4 hoodOpening;             // the touch monitor's opening: half width, down its front (from, to); corners' radius
+    float4 panelRect;               // the touch panel in the canvas (px; 0 when it isn't there)
+    float4 panelSurround;           // its surround (px)
 };
 
 Texture2D<float4> t0 : register(t0);
@@ -338,6 +356,8 @@ Gloss PSGloss(float4 pos : SV_Position)
     return o;
 }
 
+)"
+R"(
 // ---- 5. Shading: G-buffer (t0..t2) lit by the ambient cube (t3..t8) and gloss (t9..t13) ----
 float3 Irradiance(float3 n, float2 uv)
 {
@@ -434,6 +454,279 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
     c = c < 0.8 ? c : 0.8 + 0.2 * (1 - exp(-(c - 0.8) / 0.2));
     return float4(LinearToSrgb(saturate(c)), 1);
 }
+
+)"
+// (split in two: the compiler limits how long one string literal can be)
+R"(
+// ---- 6. Booth map: each booth surface (back, left, right, ceiling, floor) and
+// the hood's top and front, as a MAP x MAP grid of what it looks like, lit by
+// the cells (t0) and patches (t1) ----
+static const int MAP = 32;
+static const int MAP_FACES = 7;
+static const int HOOD_TOP = 5, HOOD_FRONT = 6;
+
+float3 BoothPoint(int face, float2 uv, out float3 N, out float3 albedo)
+{
+    float hw = booth.x, bk = booth.y, cy = booth.z, fy = booth.w, fz = booth2.x;
+    albedo = wall.rgb;
+    if (face == 0) { N = float3(0, 0, -1); return float3(lerp(-hw, hw, uv.x), lerp(cy, fy, uv.y), bk); }
+    if (face == 1) { N = float3(1, 0, 0); return float3(-hw, lerp(cy, fy, uv.y), lerp(fz, bk, uv.x)); }
+    if (face == 2) { N = float3(-1, 0, 0); return float3(hw, lerp(cy, fy, uv.y), lerp(fz, bk, uv.x)); }
+    if (face == 3) { N = float3(0, 1, 0); return float3(lerp(-hw, hw, uv.x), cy, bk * uv.y); }
+    if (face == 4) { N = float3(0, -1, 0); albedo = booth2.y; return float3(lerp(-hw, hw, uv.x), fy, bk * uv.y); }
+    float x = lerp(-hood.x, hood.x, uv.x);
+    albedo = hood2.w;
+    if (face == HOOD_TOP) { N = float3(0, -1, 0); return float3(x, hood.y, hood.z * uv.y); }
+    float s = hood2.x * uv.y;                          // down the front
+    N = normalize(float3(0, -hood.w, 1));
+    return float3(x, hood.y + s, hood.z + hood.w * s);
+}
+
+float4 PSBoothMap(float4 pos : SV_Position) : SV_Target
+{
+    int face = (int)(pos.y / MAP);
+    float2 uv = float2(pos.x, pos.y - face * MAP) / MAP;
+    float3 N, albedo;
+    float3 P = BoothPoint(face, uv, N, albedo);
+    float3 E = 0, w;
+    for (int c = 0; c < (int)counts.x; ++c)
+        E += FromSource(P, cellPos[c].xyz, cellNrm[c].xyz, cellPos[c].w, t0.Load(int3(c, 0, 0)).rgb, w) * saturate(dot(N, w));
+    for (int j = 0; j < (int)counts.y; ++j)
+        E += FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w) * saturate(dot(N, w));
+    return float4(albedo * (E / PI + light.y), 1);
+}
+
+// ---- 7. Acrylic: what's under it (t0, the target as drawn), the booth map (t1),
+// and the G-buffer's materials (t2: the chrome screws sit on top of the sheet) ----
+float3 Under(float2 px, float lod)
+{
+    return SrgbToLinear(t0.SampleLevel(linearClamp, px / view.xy, lod).rgb);
+}
+
+float3 BoothMap(int face, float2 uv)
+{
+    uv = clamp(uv, 0.5 / MAP, 1 - 0.5 / MAP);
+    return t1.SampleLevel(linearClamp, float2(uv.x, (face + uv.y) / MAP_FACES), 0).rgb;
+}
+
+// What's seen from P looking along r (unit), and how far: the nearest of the
+// booth's surfaces, the center wall and the side cabinets' faces. A glossy
+// surface's reflection spreads by `spread` (radians): the further it goes, the
+// blurrier what it shows of the cabinet.
+float3 SeenFar(float3 P, float3 r, float spread, out float t)
+{
+    float hw = booth.x, bk = booth.y, cy = booth.z, fy = booth.w, fz = booth2.x;
+    float u;
+    int face = 0;
+    t = 1e9;
+    if (r.z > 1e-4) { u = (bk - P.z) / r.z; if (u > 0 && u < t) { t = u; face = 0; } }
+    if (r.x < -1e-4) { u = (-hw - P.x) / r.x; if (u > 0 && u < t) { t = u; face = 1; } }
+    if (r.x > 1e-4) { u = (hw - P.x) / r.x; if (u > 0 && u < t) { t = u; face = 2; } }
+    if (r.y < -1e-4) { u = (cy - P.y) / r.y; if (u > 0 && u < t) { t = u; face = 3; } }
+    if (r.y > 1e-4) { u = (fy - P.y) / r.y; if (u > 0 && u < t) { t = u; face = 4; } }
+
+    // The front: the center wall, then each side cabinet's face
+    bool front = false;
+    float2 flat = 0;
+    if (r.z < -1e-4)
+    {
+        u = -P.z / r.z;
+        float3 X = P + r * u;
+        if (u > 1e-3 && u < t && abs(X.x) <= geom.x) { t = u; front = true; flat = X.xy; }
+    }
+    for (int s = -1; s <= 1; s += 2)
+    {
+        float3 C = float3(s * geom.x, 0, 0);
+        float3 ez = float3(-s * geom.y, 0, geom.z), ex = float3(s * geom.z, 0, geom.y);
+        float d = dot(r, ez);
+        if (d < -1e-4)
+        {
+            u = dot(C - P, ez) / d;
+            float3 X = P + r * u;
+            float along = dot(X - C, ex);
+            if (u > 1e-3 && u < t && along >= 0 && along <= booth2.z) { t = u; front = true; flat = float2(s * (geom.x + along), X.y); }
+        }
+    }
+    if (front) return Under(origin.xy + flat * view.z, log2(max(t * spread * view.z, 1)));
+
+    float3 X = P + r * t;
+    float2 uv = face == 0 ? float2((X.x + hw) / (2 * hw), (X.y - cy) / (fy - cy))
+              : face <= 2 ? float2((X.z - fz) / (bk - fz), (X.y - cy) / (fy - cy))
+              : float2((X.x + hw) / (2 * hw), X.z / bk);
+    return BoothMap(face, uv);
+}
+
+// Where r from P first meets the hood under the center screen, and its
+// surface's normal there; 1e9 if it doesn't. It's a box (its top, its front
+// leaning back, its outer sides) with the edges between its top and outer
+// sides rounded over, front to back, to radius R.
+float HoodHit(float3 P, float3 r, out float3 N)
+{
+    float hw = hood.x, top = hood.y, D = hood.z, s = hood.w, bottom = hood.y + hood2.x;
+    float R = hoodOpening.w;
+    float t = 1e9, u;
+    float3 X;
+    N = float3(0, 0, 1);
+    if (r.y > 1e-4)
+    {
+        u = (top - P.y) / r.y;
+        X = P + r * u;
+        if (u > 1e-3 && abs(X.x) <= hw - R && X.z >= 0 && X.z <= D) { t = u; N = float3(0, -1, 0); }
+    }
+    // The rounded edges: a quarter of a cylinder along z at each end
+    float a = dot(r.xy, r.xy);
+    for (int e = -1; e <= 1; e += 2)
+    {
+        float2 c = float2(e * (hw - R), top + R);
+        float2 d = P.xy - c;
+        float b = dot(d, r.xy), q = dot(d, d) - R * R;
+        float disc = b * b - a * q;
+        if (a < 1e-8 || disc < 0) continue;
+        u = (-b - sqrt(disc)) / a;                      // the near side
+        X = P + r * u;
+        if (u > 1e-3 && u < t && e * (X.x - c.x) >= 0 && X.y <= c.y && X.z >= 0 && X.z <= D + s * (X.y - top))
+        {
+            t = u;
+            N = float3((X.xy - c) / R, 0);
+        }
+    }
+    float3 nf = normalize(float3(0, -s, 1));
+    if (dot(r, nf) < -1e-4)
+    {
+        u = (D - s * top - P.z + s * P.y) / (r.z - s * r.y);
+        X = P + r * u;
+        float2 c = float2(hw - abs(X.x), X.y - top) - R;   // from the corner's center, when it's past it
+        bool corner = c.x < 0 && c.y < 0 && length(c) > R;
+        if (u > 1e-3 && u < t && abs(X.x) <= hw && X.y >= top && X.y <= bottom && !corner) { t = u; N = nf; }
+    }
+    for (int k = -1; k <= 1; k += 2)
+    {
+        if (k * r.x < -1e-4)
+        {
+            u = (k * hw - P.x) / r.x;
+            X = P + r * u;
+            if (u > 1e-3 && u < t && X.y >= top + R && X.y <= bottom && X.z >= 0 && X.z <= D + s * (X.y - top))
+            {
+                t = u;
+                N = float3(k, 0, 0);
+            }
+        }
+    }
+    return t;
+}
+
+// Reflectance of a clear dielectric's face (unpolarized), at cos(incidence) c
+float Fresnel(float c, float n)
+{
+    float ct = sqrt(saturate(1 - (1 - c * c) / (n * n)));
+    float rs = (c - n * ct) / (c + n * ct), rp = (n * c - ct) / (n * c + ct);
+    return 0.5 * (rs * rs + rp * rp);
+}
+
+static const float HOOD_SPREAD = 0.02;   // the hood's gloss: its reflections blur by this (radians)
+static const float HOOD_BEND = 0.3;      // its sheet's bend between top and front (inches)
+
+// What the hood looks like at X (hit along r, with normal N): the light on it
+// (from the booth map), and a glossy reflection of the rest. Its grilles and
+// seams are dull, the control panel's front edge (below what shows of its
+// front) is a lighter plastic, and the touch monitor's opening is dark glass.
+float3 HoodShade(float3 X, float3 N, float3 r)
+{
+    float hw = hood.x, D = hood.z;
+    bool isTop = N.y < -0.5, isFront = N.z > 0.5;
+    float s = X.y - hood.y;                             // down the front
+    float in_ = hw - abs(X.x);                          // in from the end
+    float3 n = N;
+    float diffuseK = 1, glossK = 1;
+    // Rounded over where the top meets the front
+    if (isTop && X.z > D - HOOD_BEND) n = normalize(n + float3(0, -hood.w, 1) * (X.z - (D - HOOD_BEND)) / HOOD_BEND);
+    if (isFront)
+    {
+        if (s < HOOD_BEND) n = normalize(n + float3(0, -1, 0) * (1 - s / HOOD_BEND));
+        if (s > hood2.y) { diffuseK = 1.7; glossK = 0.5; }
+        else if (in_ > hoodGrille.x && in_ < hoodGrille.z && s > hoodGrille.y && s < hoodGrille.w) { diffuseK = 0.4; glossK = 0.1; }
+        else if (abs(in_ - hood2.z) < 0.03) { diffuseK = 0.3; glossK = 0.2; }
+        else if (abs(X.x) < hoodOpening.x && s > hoodOpening.y && s < hoodOpening.z) diffuseK = 0.4;
+    }
+    // Orange peel: fainter than on the cabinet (at the shallow angle the top is
+    // seen from, it glitters), and fading out toward the rounded edges, where it
+    // would break up their thin highlights (none on the rounded ends at all)
+    float edgeDist = isTop ? min(D - X.z, in_ - hoodOpening.w) : isFront ? s : 0;
+    float2 peel = OrangePeel((isTop ? X.xz : X.xy) * view.z) * 0.2 * saturate(edgeDist / (2 * HOOD_BEND) - 0.5);
+    n = normalize(n - (isTop ? float3(peel.x, 0, peel.y) : float3(peel, 0)));
+    float2 uv = float2((X.x + hw) / (2 * hw), isTop ? X.z / D : s / hood2.x);
+    float3 diffuse = BoothMap(isTop ? HOOD_TOP : HOOD_FRONT, uv) * diffuseK;
+    float c = saturate(dot(-r, n));
+    float3 r2 = r + 2 * c * n;
+    float t;
+    return diffuse + Fresnel(max(c, 1e-3), 1.5) * glossK * SeenFar(X + N * 0.02, r2, HOOD_SPREAD, t);
+}
+
+// What's seen from P looking along r: as SeenFar, unless the hood is in the way
+float3 Seen(float3 P, float3 r)
+{
+    float tFar;
+    float3 L = SeenFar(P, r, 0, tFar);
+    float3 N;
+    float tHood = HoodHit(P, r, N);
+    if (tHood < tFar) L = HoodShade(P + r * tHood, N, r);
+    return L;
+}
+
+static const float ACRYLIC_N = 1.49;
+
+float4 PSAcrylic(float4 pos : SV_Position) : SV_Target
+{
+    int3 ip = int3(pos.xy, 0);
+    float3 under = SrgbToLinear(t0.Load(ip).rgb);
+    float sheet = 1 - t2.Load(ip).y;                    // not where a (metal) screw sits on it
+    float3 ex, ez;
+    float3 P = Place(pos.xy, sParams.x, ex, ez);
+    float3 v = normalize(eye.xyz - P);
+    float c = dot(v, ez);
+    if (c <= 1e-3 || sheet <= 0) return float4(LinearToSrgb(saturate(under)), 1);
+
+    // Off the front face, and off the back face: that one comes out of the
+    // front further from the eye, having crossed the sheet twice, so it's a
+    // second, fainter image, shifted
+    float3 r = 2 * c * ez - v;
+    float F = Fresnel(c, ACRYLIC_N);
+    float3 along = v - c * ez;
+    float sinT = sqrt(saturate(1 - c * c)) / ACRYLIC_N;
+    float shift = 2 * eye.w * sinT / sqrt(1 - sinT * sinT);
+    float3 P2 = P - (dot(along, along) > 1e-8 ? normalize(along) : 0) * shift;
+    float3 reflected = F * Seen(P, r) + (1 - F) * (1 - F) * F * Seen(P2, r);
+
+    // The screens are as bright as they're set up to be seen, so what's under
+    // the sheet isn't dimmed by it: the reflections add to it
+    return float4(LinearToSrgb(saturate(under + reflected * sheet)), 1);
+}
+
+// ---- 8. The hood: each pixel's view (from the camera, or straight on) traced
+// to it; the cabinet as drawn (t0) is what it reflects. Where it misses, and
+// where the touch panel is (it sits in the hood's opening), nothing's drawn. ----
+float4 PSHood(float4 pos : SV_Position) : SV_Target
+{
+    float2 cpx = float2(pos.x + sTarget.z, pos.y);      // in the canvas
+    float2 f = (cpx - origin.xy) / view.z;              // on the wall
+    bool perspective = sTarget.w > 0.5;
+    float3 P = perspective ? eye.xyz : float3(f, 1000);
+    float3 r = perspective ? normalize(float3(f, 0) - eye.xyz) : float3(0, 0, -1);
+    float3 N;
+    float t = HoodHit(P, r, N);
+    if (t > 1e8) discard;
+
+    float3 c;
+    if (panelRect.z > panelRect.x && all(cpx >= panelRect.xy - panelSurround.x) && all(cpx <= panelRect.zw + panelSurround.x))
+    {
+        if (all(cpx >= panelRect.xy) && all(cpx <= panelRect.zw)) discard;
+        c = 0.1 * HoodShade(P + r * t, N, r);           // its black surround: duller
+    }
+    else c = HoodShade(P + r * t, N, r);
+    c *= light.z;
+    c = c < 0.8 ? c : 0.8 + 0.2 * (1 - exp(-(c - 0.8) / 0.2));
+    return float4(LinearToSrgb(saturate(c)), 1);
+}
 )";
 
     struct ShapeConstants
@@ -445,7 +738,8 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
     {
         float cellPos[kMaxCells][4], cellNrm[kMaxCells][4], cellUV[kMaxCells][4];
         float patchPos[kMaxPatches][4], patchNrm[kMaxPatches][4], patchAlb[kMaxPatches][4];
-        float counts[4], view[4], origin[4], light[4], wall[4], geom[4];
+        float counts[4], view[4], origin[4], light[4], wall[4], geom[4], booth[4], booth2[4], eye[4];
+        float hood[4], hood2[4], hoodGrille[4], hoodOpening[4], panelRect[4], panelSurround[4];
     };
 
     struct Target
@@ -454,13 +748,14 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
         ID3D11RenderTargetView* rtv = nullptr;
         ID3D11ShaderResourceView* srv = nullptr;
 
-        bool Create(ID3D11Device* dev, int w, int h, DXGI_FORMAT format)
+        bool Create(ID3D11Device* dev, int w, int h, DXGI_FORMAT format, bool mips = false)
         {
             Release();
             D3D11_TEXTURE2D_DESC td = {};
             td.Width = w;
             td.Height = h;
-            td.MipLevels = 1;
+            td.MipLevels = mips ? 0 : 1;
+            td.MiscFlags = mips ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0;
             td.ArraySize = 1;
             td.Format = format;
             td.SampleDesc.Count = 1;
@@ -483,6 +778,9 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
     ID3D11PixelShader* g_psCube = nullptr;
     ID3D11PixelShader* g_psGloss = nullptr;
     ID3D11PixelShader* g_psShade = nullptr;
+    ID3D11PixelShader* g_psBoothMap = nullptr;
+    ID3D11PixelShader* g_psAcrylic = nullptr;
+    ID3D11PixelShader* g_psHood = nullptr;
     ID3D11Buffer* g_shapeCB = nullptr;
     ID3D11Buffer* g_sceneCB = nullptr;
     ID3D11BlendState* g_blendCover = nullptr;
@@ -492,6 +790,11 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
     ID3D11SamplerState* g_sampler = nullptr;
 
     Target g_gbuffer[3], g_cells, g_patches, g_patches2, g_cube[6], g_gloss[5];
+    Target g_boothMap;                      // 6. the booth's surfaces
+    Target g_under;                         // 7. a copy of what's under the acrylic
+    constexpr int kMap = 32, kMapFaces = 7; // the booth map (as in the shader)
+    std::vector<CabinetAcrylic> g_acrylics;
+    float g_hoodTopPx = 0;                  // the hood's top where it meets the wall, in the canvas
     constexpr int kBounces = 2;             // patch-to-patch bounces after the direct light
     int g_outW = 0, g_w = 0, g_h = 0, g_offset = 0;
     bool g_built = false;       // for these sizes
@@ -573,6 +876,8 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
         g_cells.Release();
         g_patches.Release();
         g_patches2.Release();
+        g_boothMap.Release();
+        g_acrylics.clear();
 
         CabinetScene scene;
         if (!GetCabinetScene(outW, h, scene)) return;
@@ -585,6 +890,7 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
                 if (sh.kind != CabinetShape::Dome) sh.x1 += offset;
             }
             if (!scene.shapes.empty()) { scene.shapes[0].x0 = 0; scene.shapes[0].x1 = static_cast<float>(w); }
+            for (CabinetAcrylic& a : scene.acrylics) { a.x0 += offset; a.x1 += offset; }
             scene.originX += offset;
         }
         g_cellCount = static_cast<int>(scene.cells.size() < kMaxCells ? scene.cells.size() : kMaxCells);
@@ -598,7 +904,8 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
         for (Target& t : g_gloss) ok = ok && t.Create(g_dev, cw, ch, DXGI_FORMAT_R16G16B16A16_FLOAT);
         ok = ok && g_cells.Create(g_dev, g_cellCount, 1, DXGI_FORMAT_R16G16B16A16_FLOAT)
                 && g_patches.Create(g_dev, g_patchCount > 0 ? g_patchCount : 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT)
-                && g_patches2.Create(g_dev, g_patchCount > 0 ? g_patchCount : 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                && g_patches2.Create(g_dev, g_patchCount > 0 ? g_patchCount : 1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT)
+                && g_boothMap.Create(g_dev, kMap, kMap * kMapFaces, DXGI_FORMAT_R16G16B16A16_FLOAT);
         if (!ok)
         {
             LOG("Could not create the cabinet's lighting targets");
@@ -637,6 +944,34 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
         sc->geom[0] = scene.cornerIn;
         sc->geom[1] = std::sin(scene.faceAngle);
         sc->geom[2] = std::cos(scene.faceAngle);
+        sc->booth[0] = scene.boothHalfWidth;
+        sc->booth[1] = scene.boothBack;
+        sc->booth[2] = scene.boothCeiling;
+        sc->booth[3] = scene.boothFloor;
+        sc->booth2[0] = scene.faceLenIn * sc->geom[1];      // where the side walls start: the faces' far ends
+        sc->booth2[1] = scene.floorAlbedo;
+        sc->booth2[2] = scene.faceLenIn;
+        for (int i = 0; i < 3; ++i) sc->eye[i] = scene.eye[i];
+        sc->eye[3] = scene.acrylicIn;
+        sc->hood[0] = scene.cornerIn;
+        sc->hood[1] = scene.hoodTop;
+        sc->hood[2] = scene.hoodDepth;
+        sc->hood[3] = scene.hoodSlope;
+        sc->hood2[0] = scene.hoodHeight;
+        sc->hood2[1] = scene.hoodFace;
+        sc->hood2[2] = scene.hoodSplit;
+        sc->hood2[3] = scene.hoodAlbedo;
+        for (int i = 0; i < 4; ++i) sc->hoodGrille[i] = scene.hoodGrille[i];
+        for (int i = 0; i < 3; ++i) sc->hoodOpening[i] = scene.hoodOpening[i];
+        sc->hoodOpening[3] = scene.hoodCorner;
+        if (scene.panelRect[2] > scene.panelRect[0])
+        {
+            sc->panelRect[0] = scene.panelRect[0] + offset; sc->panelRect[1] = scene.panelRect[1];
+            sc->panelRect[2] = scene.panelRect[2] + offset; sc->panelRect[3] = scene.panelRect[3];
+        }
+        sc->panelSurround[0] = scene.panelSurround;
+        g_hoodTopPx = scene.originY + scene.hoodTop * scene.pxPerInch;
+        g_acrylics = scene.acrylics;
         ctx->UpdateSubresource(g_sceneCB, 0, nullptr, sc, 0, 0);
         delete sc;
 
@@ -713,6 +1048,7 @@ bool CabinetLightInit(ID3D11Device* dev)
     const bool ok = CreateVS("VSFull", &g_vsFull) && CreateVS("VSShape", &g_vsShape)
         && CreatePS("PSShape", &g_psShape) && CreatePS("PSCells", &g_psCells) && CreatePS("PSPatches", &g_psPatches) && CreatePS("PSBounce", &g_psBounce)
         && CreatePS("PSCube", &g_psCube) && CreatePS("PSGloss", &g_psGloss) && CreatePS("PSShade", &g_psShade)
+        && CreatePS("PSBoothMap", &g_psBoothMap) && CreatePS("PSAcrylic", &g_psAcrylic) && CreatePS("PSHood", &g_psHood)
         && SUCCEEDED(dev->CreateBuffer(&sb, nullptr, &g_shapeCB))
         && SUCCEEDED(dev->CreateBuffer(&cb, nullptr, &g_sceneCB))
         && SUCCEEDED(dev->CreateBlendState(&bc, &g_blendCover))
@@ -774,6 +1110,17 @@ bool CabinetLightRender(ID3D11DeviceContext* ctx, int outWidth, int height, int 
         Target* t = prev; prev = next; next = t;
     }
 
+    // 6. (For later) the booth map, from the cells and patches
+    UnbindSRVs(ctx);
+    ctx->OMSetRenderTargets(1, &g_boothMap.rtv, nullptr);
+    Viewport(ctx, kMap, kMap * kMapFaces);
+    ctx->PSSetShader(g_psBoothMap, nullptr, 0);
+    {
+        ID3D11ShaderResourceView* in[2] = { g_cells.srv, prev->srv };
+        ctx->PSSetShaderResources(0, 2, in);
+    }
+    ctx->Draw(4, 0);
+
     // 3. Ambient cube, from the cells and patches
     UnbindSRVs(ctx);
     ID3D11RenderTargetView* cubes[6];
@@ -803,6 +1150,100 @@ bool CabinetLightRender(ID3D11DeviceContext* ctx, int outWidth, int height, int 
                                              g_gloss[0].srv, g_gloss[1].srv, g_gloss[2].srv,
                                              g_gloss[3].srv, g_gloss[4].srv };
     ctx->PSSetShaderResources(0, 14, inputs);
+    ctx->Draw(4, 0);
+    UnbindSRVs(ctx);
+    return true;
+}
+
+bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target)
+{
+    if (!g_psAcrylic || !g_enabled || !target || g_acrylics.empty()) return false;
+
+    // A copy of the target to read from (it's what's under the acrylic, and what
+    // the front of the cabinet looks like in reflections)
+    ID3D11Resource* res = nullptr;
+    target->GetResource(&res);
+    ID3D11Texture2D* tex = nullptr;
+    if (!res || FAILED(res->QueryInterface(IID_PPV_ARGS(&tex)))) { SafeRelease(res); return false; }
+    SafeRelease(res);
+    D3D11_TEXTURE2D_DESC td;
+    tex->GetDesc(&td);
+    if (static_cast<int>(td.Width) != g_w || static_cast<int>(td.Height) != g_h || td.SampleDesc.Count != 1)
+    {
+        SafeRelease(tex);
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC ud = {};
+    if (g_under.tex) g_under.tex->GetDesc(&ud);
+    if (!g_under.tex || ud.Width != td.Width || ud.Height != td.Height || ud.Format != td.Format)
+    {
+        if (!g_under.Create(g_dev, g_w, g_h, td.Format, true))
+        {
+            LOG("Could not create the acrylic's copy of the screens (%dx%d)", g_w, g_h);
+            g_under.Release();
+            SafeRelease(tex);
+            g_acrylics.clear();     // don't keep trying
+            return false;
+        }
+    }
+    ctx->CopySubresourceRegion(g_under.tex, 0, 0, 0, 0, tex, 0, nullptr);
+    SafeRelease(tex);
+    ctx->GenerateMips(g_under.srv);
+
+    CommonState(ctx);
+    UnbindSRVs(ctx);
+    ctx->OMSetBlendState(g_blendOff, nullptr, 0xFFFFFFFF);
+    ctx->OMSetRenderTargets(1, &target, nullptr);
+    Viewport(ctx, g_w, g_h);
+    ctx->VSSetShader(g_vsShape, nullptr, 0);
+    ctx->PSSetShader(g_psAcrylic, nullptr, 0);
+    ctx->VSSetConstantBuffers(0, 1, &g_shapeCB);
+    ctx->PSSetConstantBuffers(0, 1, &g_shapeCB);
+    ctx->PSSetConstantBuffers(1, 1, &g_sceneCB);
+    ID3D11ShaderResourceView* in[3] = { g_under.srv, g_boothMap.srv, g_gbuffer[2].srv };
+    ctx->PSSetShaderResources(0, 3, in);
+    for (const CabinetAcrylic& a : g_acrylics)
+    {
+        const ShapeConstants c = {
+            { std::floor(a.x0 + 0.5f), std::floor(a.y0 + 0.5f), std::floor(a.x1 + 0.5f), std::floor(a.y1 + 0.5f) },
+            { a.z, a.z, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 },
+            { static_cast<float>(g_w), static_cast<float>(g_h), 0, 0 } };
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (FAILED(ctx->Map(g_shapeCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
+        memcpy(m.pData, &c, sizeof(c));
+        ctx->Unmap(g_shapeCB, 0);
+        ctx->Draw(4, 0);
+    }
+    UnbindSRVs(ctx);
+    return true;
+}
+
+bool CabinetLightHood(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, int width, int height,
+                      int offset, bool perspective)
+{
+    if (!g_psHood || !g_enabled || !target || !g_under.srv) return false;
+    CommonState(ctx);
+    UnbindSRVs(ctx);
+    ctx->OMSetBlendState(g_blendOff, nullptr, 0xFFFFFFFF);
+    ctx->OMSetRenderTargets(1, &target, nullptr);
+    Viewport(ctx, width, height);
+    ctx->VSSetShader(g_vsShape, nullptr, 0);
+    ctx->PSSetShader(g_psHood, nullptr, 0);
+    ctx->VSSetConstantBuffers(0, 1, &g_shapeCB);
+    ctx->PSSetConstantBuffers(0, 1, &g_shapeCB);
+    ctx->PSSetConstantBuffers(1, 1, &g_sceneCB);
+    ID3D11ShaderResourceView* in[2] = { g_under.srv, g_boothMap.srv };
+    ctx->PSSetShaderResources(0, 2, in);
+    // From the hood's top where it meets the wall (nothing of it shows above
+    // that) down, across the whole output
+    const ShapeConstants c = {
+        { 0, std::floor(std::fmax(g_hoodTopPx - 2, 0.0f)), static_cast<float>(width), static_cast<float>(height) },
+        { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 },
+        { static_cast<float>(width), static_cast<float>(height), static_cast<float>(offset), perspective ? 1.0f : 0.0f } };
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ctx->Map(g_shapeCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return false;
+    memcpy(m.pData, &c, sizeof(c));
+    ctx->Unmap(g_shapeCB, 0);
     ctx->Draw(4, 0);
     UnbindSRVs(ctx);
     return true;
