@@ -23,6 +23,11 @@ bool CabinetLightRender(ID3D11DeviceContext* ctx, int outWidth, int height, int 
 // False when there's nothing to draw. Changes the pipeline state.
 bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target);
 
+// The acrylic's reflections alone (linear, the canvas's size), from the last
+// CabinetLightReflect: for drawing the screens again, sharper, with them on top
+// (the perspective warp does). Null when there are none.
+ID3D11ShaderResourceView* CabinetLightReflections();
+
 // Draws the hood under the center screen over everything, in 3D, into target
 // (a window x height output; call last). With perspective, it's seen from the
 // perspective camera, and target is the output (after the warp; the canvas is

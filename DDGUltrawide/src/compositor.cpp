@@ -128,6 +128,9 @@ namespace
         float out[4];      // window width, height; canvas width; canvas offset
         float geo[4];      // center picture's middle (window px x, y); pixels per inch; corner (inches)
         float cam[4];      // sin, cos of the side faces' turn; camera distance (inches)
+        float pic[2][4];   // the side screens' pictures in the canvas (px: left, top, right, bottom)
+        float src[2][4];   // ...and in the game's frame (uv)
+        float texel[4];    // a texel of the game's frame (uv)
     };
 
     // Per-draw constants: where to draw (fractions of the output) and what to sample
@@ -172,13 +175,23 @@ float4 PSMain(VSOut i) : SV_Target
 // Perspective warp: each window pixel shows the flat canvas (t0) where its
 // camera ray lands. Within the corners (the center wall, seen straight on) that's
 // the same point; past them, the ray meets a side cabinet's face, turned toward
-// the camera, at a point that sits further out on the flat drawing.
+// the camera, at a point that sits further out on the flat drawing. There, the
+// side screens' pictures are drawn again, straight from the game's frame (t1)
+// at its full resolution rather than the canvas's smaller copy, with the
+// acrylic's reflections (t2) over them.
 cbuffer Warp : register(b1)
 {
     float4 wOut;     // window width, height; canvas width; canvas offset
     float4 wGeo;     // center picture's middle (window px); pixels per inch; corner (inches)
     float4 wCam;     // sin, cos of the faces' turn; camera distance (inches)
+    float4 wPic[2];  // the side screens' pictures in the canvas (px)
+    float4 wSrc[2];  // ...and in the game's frame (uv)
+    float4 wTexel;   // a texel of the game's frame (uv)
 };
+Texture2D frame : register(t1);
+Texture2D reflections : register(t2);
+float3 SrgbToLinear(float3 c) { return c <= 0.04045 ? c / 12.92 : pow(abs((c + 0.055) / 1.055), 2.4); }
+float3 LinearToSrgb(float3 c) { return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(abs(c), 1 / 2.4) - 0.055; }
 float4 PSWarp(VSOut i) : SV_Target
 {
     float2 f = (i.pos.xy - wGeo.xy) / wGeo.z;          // inches from the center picture's middle
@@ -191,8 +204,18 @@ float4 PSWarp(VSOut i) : SV_Target
         f = float2(sign(f.x) * (c0 + along), t * f.y);
     }
     float2 px = f * wGeo.z + wGeo.xy + float2(wOut.w, 0);
-    if (px.x < 0 || px.x > wOut.z) return float4(0, 0, 0, 1);   // past the canvas: left dark
-    return float4(tex.SampleLevel(smp, px / float2(wOut.z, wOut.y), 0).rgb, 1);
+    float2 cuv = px / float2(wOut.z, wOut.y);
+    float3 c = tex.SampleLevel(smp, cuv, 0).rgb;
+    [unroll] for (int s = 0; s < 2; ++s)
+    {
+        float2 q = (px - wPic[s].xy) / max(wPic[s].zw - wPic[s].xy, 1);
+        float2 uv = clamp(lerp(wSrc[s].xy, wSrc[s].zw, q), wSrc[s].xy + wTexel.xy, wSrc[s].zw - wTexel.xy);
+        float3 p = frame.Sample(smp, uv).rgb;          // (sampled everywhere: its mip level follows the warp)
+        if (wPic[s].z > wPic[s].x && all(q >= 0) && all(q <= 1))
+            c = LinearToSrgb(saturate(SrgbToLinear(p) + reflections.SampleLevel(smp, cuv, 0).rgb));
+    }
+    if (px.x < 0 || px.x > wOut.z) c = 0;              // past the canvas: left dark
+    return float4(c, 1);
 }
 )";
 
@@ -747,10 +770,23 @@ float4 PSWarp(VSOut i) : SV_Target
         {
             // The warp: the whole window, sampling the canvas
             const DrawConstants full = { { 0, 0, 1, 1 }, { 0, 0, 1, 1 }, { 0, 0, 1, 1 } };
-            const WarpConstants w = {
+            WarpConstants w = {
                 { static_cast<float>(o.w), static_cast<float>(o.h), static_cast<float>(canvasW), static_cast<float>(offset) },
                 { view.originX, view.originY, view.pxPerInch, view.cornerIn },
                 { view.sinA, view.cosA, view.cameraIn, 0 } };
+            // The side screens' pictures, to draw again from the game's frame
+            for (const Placement& p : placements)
+            {
+                if (p.screen != 0 && p.screen != 2) continue;
+                float* r = w.pic[p.screen / 2];
+                r[0] = p.dest.originX * o.w + offset; r[1] = p.dest.originY * o.h;
+                r[2] = (p.dest.originX + p.dest.sizeX) * o.w + offset; r[3] = (p.dest.originY + p.dest.sizeY) * o.h;
+                float* q = w.src[p.screen / 2];
+                q[0] = p.source.originX; q[1] = p.source.originY;
+                q[2] = p.source.originX + p.source.sizeX; q[3] = p.source.originY + p.source.sizeY;
+            }
+            w.texel[0] = 0.5f / g_srcW;
+            w.texel[1] = 0.5f / g_srcH;
             D3D11_MAPPED_SUBRESOURCE m;
             if (SUCCEEDED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
             {
@@ -770,9 +806,11 @@ float4 PSWarp(VSOut i) : SV_Target
             g_ctx->RSSetViewports(1, &wv);
             g_ctx->PSSetShader(g_psWarp, nullptr, 0);
             g_ctx->PSSetConstantBuffers(1, 1, &g_warpCB);
-            g_ctx->PSSetShaderResources(0, 1, &g_canvasSRV);
+            ID3D11ShaderResourceView* warpIn[3] = { g_canvasSRV, g_srcSRV, CabinetLightReflections() };
+            g_ctx->PSSetShaderResources(0, 3, warpIn);
             g_ctx->Draw(4, 0);
-            g_ctx->PSSetShaderResources(0, 1, &nullSRV);
+            ID3D11ShaderResourceView* noSRVs[3] = {};
+            g_ctx->PSSetShaderResources(0, 3, noSRVs);
             // The hood, seen from the camera, over the warped view
             if (acrylic) CabinetLightHood(g_ctx, o.rtv, o.w, o.h, offset, true);
         }

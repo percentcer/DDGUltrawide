@@ -814,7 +814,23 @@ float3 Seen(float3 P, float3 r)
 
 static const float ACRYLIC_N = 1.49;
 
-float4 PSAcrylic(float4 pos : SV_Position) : SV_Target
+// Drawn with the acrylic over it; and the reflections alone (linear), so the
+// screens can be drawn again under them
+struct AcrylicOut
+{
+    float4 color : SV_Target0;
+    float4 reflected : SV_Target1;
+};
+
+AcrylicOut Acrylic(float3 under, float3 reflected)
+{
+    AcrylicOut o;
+    o.color = float4(LinearToSrgb(saturate(under + reflected)), 1);
+    o.reflected = float4(reflected, 1);
+    return o;
+}
+
+AcrylicOut PSAcrylic(float4 pos : SV_Position)
 {
     int3 ip = int3(pos.xy, 0);
     float3 under = SrgbToLinear(t0.Load(ip).rgb);
@@ -823,7 +839,7 @@ float4 PSAcrylic(float4 pos : SV_Position) : SV_Target
     float3 P = Place(pos.xy, sParams.x, ex, ez);
     float3 v = normalize(eye.xyz - P);
     float c = dot(v, ez);
-    if (c <= 1e-3 || sheet <= 0) return float4(LinearToSrgb(saturate(under)), 1);
+    if (c <= 1e-3 || sheet <= 0) return Acrylic(under, 0);
 
     // Off the front face, and off the back face: that one comes out of the
     // front further from the eye, having crossed the sheet twice, so it's a
@@ -838,7 +854,7 @@ float4 PSAcrylic(float4 pos : SV_Position) : SV_Target
 
     // The screens are as bright as they're set up to be seen, so what's under
     // the sheet isn't dimmed by it: the reflections add to it
-    return float4(LinearToSrgb(saturate(under + reflected * sheet)), 1);
+    return Acrylic(under, reflected * sheet);
 }
 
 // ---- 7. (continued) The chrome screw heads: mirrors, curved. What's under
@@ -958,6 +974,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     Target g_gbuffer[3], g_cells, g_patches, g_patches2, g_cube[6], g_gloss[5];
     Target g_boothMap;                      // 6. the booth's surfaces
     Target g_under;                         // 7. a copy of what's under the acrylic
+    Target g_reflections;                   // 7. the acrylic's reflections alone
     constexpr int kMap = 32, kMapFaces = 7; // the booth map (as in the shader)
     std::vector<CabinetAcrylic> g_acrylics;
     std::vector<CabinetAcrylic> g_screws;   // the screw heads (their bounds; z unused)
@@ -1363,6 +1380,11 @@ bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* targe
             return false;
         }
     }
+    D3D11_TEXTURE2D_DESC rd = {};
+    if (g_reflections.tex) g_reflections.tex->GetDesc(&rd);
+    if ((!g_reflections.tex || rd.Width != td.Width || rd.Height != td.Height)
+        && !g_reflections.Create(g_dev, g_w, g_h, DXGI_FORMAT_R16G16B16A16_FLOAT))
+        g_reflections.Release();
     ctx->CopySubresourceRegion(g_under.tex, 0, 0, 0, 0, tex, 0, nullptr);
     SafeRelease(tex);
     ctx->GenerateMips(g_under.srv);
@@ -1370,7 +1392,10 @@ bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* targe
     CommonState(ctx);
     UnbindSRVs(ctx);
     ctx->OMSetBlendState(g_blendOff, nullptr, 0xFFFFFFFF);
-    ctx->OMSetRenderTargets(1, &target, nullptr);
+    const float none[4] = { 0, 0, 0, 0 };
+    if (g_reflections.rtv) ctx->ClearRenderTargetView(g_reflections.rtv, none);
+    ID3D11RenderTargetView* targets[2] = { target, g_reflections.rtv };
+    ctx->OMSetRenderTargets(g_reflections.rtv ? 2 : 1, targets, nullptr);
     Viewport(ctx, g_w, g_h);
     ctx->VSSetShader(g_vsShape, nullptr, 0);
     ctx->PSSetShader(g_psAcrylic, nullptr, 0);
@@ -1396,6 +1421,7 @@ bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* targe
     for (const CabinetAcrylic& a : g_acrylics) draw(a);
 
     // The chrome screw heads, over it, blended in by how much of each pixel they cover
+    ctx->OMSetRenderTargets(1, &target, nullptr);
     ctx->PSSetShader(g_psChrome, nullptr, 0);
     ctx->OMSetBlendState(g_blendCover, nullptr, 0xFFFFFFFF);
     for (const CabinetAcrylic& a : g_screws) draw(a);
@@ -1432,4 +1458,9 @@ bool CabinetLightHood(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, 
     ctx->Draw(4, 0);
     UnbindSRVs(ctx);
     return true;
+}
+
+ID3D11ShaderResourceView* CabinetLightReflections()
+{
+    return g_enabled && !g_acrylics.empty() ? g_reflections.srv : nullptr;
 }
