@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <array>
 #include <vector>
 
 // A screen rectangle as fractions of a frame or window.
@@ -154,6 +155,11 @@ struct CabinetScene
     // to), and its paint's albedo (linear)
     float hoodTop, hoodDepth, hoodSlope, hoodHeight, hoodFace, hoodSplit;
     float hoodGrille[4], hoodCorner, hoodOpening[3], hoodAlbedo;
+    // On its top: the center plate's flanges, resting on the end pieces (where
+    // they start, either side of the middle; how wide; their sheet's
+    // thickness), and the screws (x, z, head radius), black
+    float hoodFlange[3];
+    std::vector<std::array<float, 3>> hoodScrews;
     // The touch panel, if it's in this window (output pixels; else all 0), and
     // the black surround it sits in (pixels)
     float panelRect[4], panelSurround;

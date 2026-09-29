@@ -372,12 +372,31 @@ namespace
     // 245 mm down to the control panel's front edge, the pieces meeting 340 mm
     // in from each end, the speaker grilles 75 to 290 mm in and 44 to 211 mm
     // down, and the touch monitor's opening 481 x 183 mm, 40 mm down. From the
-    // exploded views (page 122; estimated): about 350 mm deep, its front
-    // leaning back about 75 mm over its 317 mm height.
+    // exploded views (page 122, isometric, so in proportion): HOOD-(CENTER) is
+    // 1.85 times as wide (620 mm, between the end pieces) as it's deep, 335 mm
+    // (HOOD-L's top agrees), and the front leans back about 75 mm over its
+    // 317 mm height (estimated).
+    //
+    // On top: HOOD-(CENTER)'s sides are flanges (about 28 mm) resting on top of
+    // the end pieces, so it stands a sheet's thickness above them, its rolled
+    // outer edges catching the light; and black M4 truss-head Torx screws hold it
+    // all down (the parts list: 7 on HOOD-(CENTER), 4 on the end pieces). The
+    // drawings put them in rows: across HOOD-(CENTER) at 3, 34.5, 65.7 and 97%
+    // of its width, 82% of the way out (a photo, and the parts list's 7, show 3
+    // in the row 40% of the way out: at 3, 50 and 97%); and 3 across each end
+    // piece, 50, 171 and 293 mm in from its end, 65 mm from the front.
     constexpr float kHoodCoverFraction = 1.0f / 30;
     constexpr float kHoodFaceMm = 245.0f;
     constexpr float kHoodHeightMm = 317.0f;
-    constexpr float kHoodDepthMm = 350.0f;
+    constexpr float kHoodDepthMm = 335.0f;
+    constexpr float kHoodFlangeMm = 28.0f;
+    constexpr float kHoodSheetMm = 1.5f;        // its sheet's thickness (its edges round over about as much)
+    constexpr float kHoodScrewMm = 8.0f;        // head diameter
+    struct HoodScrewRow { float out; int n; float across[4]; };     // out from the wall (of the depth); across the plate (of its width)
+    constexpr HoodScrewRow kPlateScrews[2] = { { 0.40f, 3, { 0.03f, 0.5f, 0.97f } },
+                                               { 0.82f, 4, { 0.033f, 0.345f, 0.657f, 0.968f } } };
+    constexpr float kEndScrewsMm[3] = { 50.0f, 171.0f, 293.0f };   // in from each end
+    constexpr float kEndScrewsFromFrontMm = 65.0f;
     constexpr float kHoodLeanMm = 75.0f;
     constexpr float kHoodCornerMm = 30.0f;
     constexpr float kHoodSplitMm = 340.0f;
@@ -796,6 +815,18 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
     scene.hoodOpening[1] = Mm(kTouchOpeningMm[2]);
     scene.hoodOpening[2] = Mm(kTouchOpeningMm[2] + kTouchOpeningMm[1]);
     scene.hoodAlbedo = ToLinear(kHoodAlbedo);
+    const float cornerIn = kCenterWidthInches / 2 + FrameSideIn(1);   // the hood's ends
+    const float plateHalf = cornerIn - Mm(kHoodSplitMm);           // the plate: either side of the middle
+    scene.hoodFlange[0] = plateHalf;
+    scene.hoodFlange[1] = Mm(kHoodFlangeMm);
+    scene.hoodFlange[2] = Mm(kHoodSheetMm);
+    const float screwR = Mm(kHoodScrewMm) / 2;
+    for (const HoodScrewRow& row : kPlateScrews)
+        for (int i = 0; i < row.n; ++i)
+            scene.hoodScrews.push_back({ -plateHalf + 2 * plateHalf * row.across[i], Mm(kHoodDepthMm) * row.out, screwR });
+    for (float in : kEndScrewsMm)
+        for (int side = -1; side <= 1; side += 2)
+            scene.hoodScrews.push_back({ side * (cornerIn - Mm(in)), Mm(kHoodDepthMm - kEndScrewsFromFrontMm), screwR });
     if (has[kTouchPanelScreen])
         for (int i = 0; i < 4; ++i) scene.panelRect[i] = pic[kTouchPanelScreen][i];
     scene.panelSurround = kPanelSurroundIn * u;

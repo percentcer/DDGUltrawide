@@ -47,6 +47,7 @@ namespace
 
     constexpr int kMaxCells = 128;
     constexpr int kMaxPatches = 160;
+    constexpr int kMaxHoodScrews = 16;
     constexpr int kCubeScale = 8;           // ambient cube resolution: 1 texel per 8x8 pixels
     // Light levels are physical, in units of the screens' white: a screen emits
     // exactly what it shows (1 = white = ArcadeCabinetScreenNits), and the output
@@ -56,6 +57,7 @@ namespace
     const char* kShader = R"(
 #define MAX_CELLS 128
 #define MAX_PATCHES 160
+#define MAX_HOOD_SCREWS 16
 static const float PI = 3.14159265;
 
 cbuffer Shape : register(b0)
@@ -90,6 +92,8 @@ cbuffer Scene : register(b1)
     float4 hoodOpening;             // the touch monitor's opening: half width, down its front (from, to); corners' radius
     float4 panelRect;               // the touch panel in the canvas (px; 0 when it isn't there)
     float4 panelSurround;           // its surround (px)
+    float4 hoodFlange;              // the center plate's flanges: start (x, either side), width, thickness; the screws' count
+    float4 hoodScrews[MAX_HOOD_SCREWS];   // the screws on the hood's top: x, z, head radius
 };
 
 Texture2D<float4> t0 : register(t0);
@@ -134,6 +138,18 @@ float4 VSFull(uint id : SV_VertexID) : SV_Position
     return float4(t.x * 2 - 1, 1 - t.y * 2, 0, 1);
 }
 
+// A fastener's button head, l out from its middle (in radii): its height and
+// slope (per radius). A broad, gently crowned top, rounding over at the
+// shoulder down to its edge.
+void ButtonHead(float l, out float h, out float dh)
+{
+    const float TOP = 0.5;                              // the top, out to this fraction of the radius
+    if (l < TOP) { h = 1 - 0.08 * (l / TOP) * (l / TOP); dh = -0.16 * l / (TOP * TOP); return; }
+    float k = min((l - TOP) / (1 - TOP), 0.98), q = sqrt(1 - k * k);
+    h = 0.92 * q;
+    dh = -0.92 * k / q / (1 - TOP);
+}
+
 // ---- G-buffer: one shape per draw ----
 float4 VSShape(uint id : SV_VertexID) : SV_Position
 {
@@ -161,21 +177,13 @@ GBuffer PSShape(float4 pos : SV_Position)
     float roughness = sMat.x;
     if (sParams.w > 1.5)
     {
-        // Dome: a fastener's button head. A broad, gently crowned top that
-        // rounds over at the shoulder down to its edge...
+        // Dome: a fastener's button head...
         float2 d = (p - sRect.xy) / sRect.z;
         float l = length(d);
         cover = saturate((1 - l) * sRect.z + 0.5);
         float2 dir = l > 1e-4 ? d / l : 0;
-        const float TOP = 0.5;                          // the top, out to this fraction of the radius
-        float h, dh;                                    // height (of the head's) and its slope, per radius
-        if (l < TOP) { h = 1 - 0.08 * (l / TOP) * (l / TOP); dh = -0.16 * l / (TOP * TOP); }
-        else
-        {
-            float k = min((l - TOP) / (1 - TOP), 0.98), q = sqrt(1 - k * k);
-            h = 0.92 * q;
-            dh = -0.92 * k / q / (1 - TOP);
-        }
+        float h, dh;
+        ButtonHead(l, h, dh);
         n = normalize(float3(dir * -dh * sParams.z / (sRect.z / sMat.z), 1));
         z += sParams.z * h;
 
@@ -589,10 +597,15 @@ float3 SeenFar(float3 P, float3 r, float spread, out float t)
     return BoothMap(face, uv);
 }
 
+)"
+R"(
+static const float HOOD_BEND = 0.3;      // the hood's sheet's bend between top and front (inches)
+
 // Where r from P first meets the hood under the center screen, and its
 // surface's normal there; 1e9 if it doesn't. It's a box (its top, its front
 // leaning back, its outer sides) with the edges between its top and outer
-// sides rounded over, front to back, to radius R.
+// sides rounded over, front to back, to radius R; and on its top, the center
+// plate's flanges, each a thin box (a sheet thick) resting on an end piece.
 float HoodHit(float3 P, float3 r, out float3 N)
 {
     float hw = hood.x, top = hood.y, D = hood.z, s = hood.w, bottom = hood.y + hood2.x;
@@ -645,6 +658,21 @@ float HoodHit(float3 P, float3 r, out float3 N)
             }
         }
     }
+    for (int f = -1; f <= 1; f += 2)
+    {
+        // The flange: its slabs (x, y, z), and where the ray is inside all three
+        float3 lo = float3(f < 0 ? -(hoodFlange.x + hoodFlange.y) : hoodFlange.x, top - hoodFlange.z, 0);
+        float3 hi = float3(f < 0 ? -hoodFlange.x : hoodFlange.x + hoodFlange.y, top, D - HOOD_BEND);
+        float3 inv = 1 / (abs(r) > 1e-6 ? r : 1e-6);
+        float3 t0 = (lo - P) * inv, t1 = (hi - P) * inv;
+        float3 tn = min(t0, t1), tf = max(t0, t1);
+        float enter = max(max(tn.x, tn.y), tn.z), leave = min(min(tf.x, tf.y), tf.z);
+        if (enter <= leave && enter > 1e-3 && enter < t)
+        {
+            t = enter;
+            N = enter == tn.x ? float3(-sign(r.x), 0, 0) : enter == tn.y ? float3(0, -sign(r.y), 0) : float3(0, 0, -sign(r.z));
+        }
+    }
     return t;
 }
 
@@ -657,7 +685,6 @@ float Fresnel(float c, float n)
 }
 
 static const float HOOD_SPREAD = 0.02;   // the hood's gloss: its reflections blur by this (radians)
-static const float HOOD_BEND = 0.3;      // its sheet's bend between top and front (inches)
 
 // What the hood looks like at X (hit along r, with normal N): the light on it
 // (from the booth map), and a glossy reflection of the rest. Its grilles and
@@ -666,7 +693,8 @@ static const float HOOD_BEND = 0.3;      // its sheet's bend between top and fro
 float3 HoodShade(float3 X, float3 N, float3 r)
 {
     float hw = hood.x, D = hood.z;
-    bool isTop = N.y < -0.5, isFront = N.z > 0.5;
+    bool flange = X.y < hood.y - 1e-4;                  // on a flange (it stands above the top)
+    bool isTop = N.y < -0.5, isFront = N.z > 0.5 && !flange;
     float s = X.y - hood.y;                             // down the front
     float in_ = hw - abs(X.x);                          // in from the end
     float3 n = N;
@@ -676,8 +704,41 @@ float3 HoodShade(float3 X, float3 N, float3 r)
     // the player, all within a pixel or two: it shows their blend, a soft line.
     // So it's blurred there by how far the bend turns (the rounded ends turn
     // the whole way).
-    float bend = isTop ? saturate((X.z - (D - HOOD_BEND)) / HOOD_BEND) : isFront ? saturate(1 - s / HOOD_BEND) : 1;
+    float bend = flange && !isTop ? 1 : isTop ? saturate((X.z - (D - HOOD_BEND)) / HOOD_BEND) : isFront ? saturate(1 - s / HOOD_BEND) : 1;
     if (isTop) n = normalize(n + float3(0, -hood.w, 1) * bend);
+    // A flange's front end: its top carries on over the bend to the front, so
+    // it's shaded as the top (blurred, as the bend's reflection is)
+    if (flange && N.z > 0.5) n = float3(0, -1, 0);
+
+    // On the top: the center plate's flanges (traced as thin boxes; their
+    // sides are blurred like the other bends). Each one's outer edge rolls over
+    // (a thin highlight), and just past it, on the end piece, is its shadow.
+    // Then the black screws.
+    float across = (abs(X.x) - hoodFlange.x) / hoodFlange.y;     // 0 to 1 across a flange
+    float past = (across - 1) * hoodFlange.y;                    // past the sheet's edge (inches)
+    bool screw = false;
+    if (isTop)
+    {
+        if (flange && past > -hoodFlange.z)
+        {
+            float roll = 1 + past / hoodFlange.z;
+            n = normalize(n + float3(sign(X.x) * 2 * roll, 0, 0));
+            bend = max(bend, roll);
+        }
+        else if (!flange && past >= 0 && past < hoodFlange.z) { diffuseK = 0.4; glossK = 0.35; }
+        for (int i = 0; i < (int)hoodFlange.w; ++i)
+        {
+            float2 d = (X.xz - hoodScrews[i].xy) / hoodScrews[i].z;
+            float l = length(d);
+            if (l >= 1) continue;
+            float h, dh;
+            ButtonHead(l, h, dh);
+            float2 dir = l > 1e-4 ? d / l : 0;
+            n = normalize(float3(dir.x * -dh * 0.3, -1, dir.y * -dh * 0.3));   // (heads 0.3 of their width high)
+            screw = true;
+            bend = max(bend, l);                        // the reflection blurs over the curve, as at the edges
+        }
+    }
     if (isFront)
     {
         n = normalize(n + float3(0, -1, 0) * bend);
@@ -689,7 +750,8 @@ float3 HoodShade(float3 X, float3 N, float3 r)
     // Orange peel: fainter than on the cabinet (at the shallow angle the top is
     // seen from, it glitters), and fading out toward the rounded edges, where it
     // would break up their thin highlights (none on the rounded ends at all)
-    float edgeDist = isTop ? min(D - X.z, in_ - hoodOpening.w) : isFront ? s : 0;
+    float edgeDist = isTop ? min(min(D - X.z, in_ - hoodOpening.w), abs(past)) : isFront ? s : 0;
+    if (screw) edgeDist = 0;
     float2 peel = OrangePeel((isTop ? X.xz : X.xy) * view.z) * 0.2 * saturate(edgeDist / (2 * HOOD_BEND) - 0.5);
     n = normalize(n - (isTop ? float3(peel.x, 0, peel.y) : float3(peel, 0)));
     float2 uv = float2((X.x + hw) / (2 * hw), isTop ? X.z / D : s / hood2.x);
@@ -697,7 +759,10 @@ float3 HoodShade(float3 X, float3 N, float3 r)
     float c = saturate(dot(-r, n));
     float3 r2 = r + 2 * c * n;
     float t;
-    return diffuse + Fresnel(max(c, 1e-3), 1.5) * glossK * SeenFar(X + N * 0.02, r2, HOOD_SPREAD + 0.5 * bend, t);
+    // The screws: black-finished metal, a little more reflective than the paint
+    float F = screw ? 0.12 + 0.88 * pow(1 - c, 5) : Fresnel(max(c, 1e-3), 1.5);
+    if (screw) diffuse *= 0.3;
+    return diffuse + F * glossK * SeenFar(X + N * 0.02, r2, HOOD_SPREAD + 0.5 * bend, t);
 }
 
 // What's seen from P looking along r: as SeenFar, unless the hood is in the way
@@ -803,6 +868,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         float patchPos[kMaxPatches][4], patchNrm[kMaxPatches][4], patchAlb[kMaxPatches][4];
         float counts[4], view[4], origin[4], light[4], wall[4], geom[4], booth[4], booth2[4], eye[4];
         float hood[4], hood2[4], hoodGrille[4], hoodOpening[4], panelRect[4], panelSurround[4];
+        float hoodFlange[4], hoodScrews[kMaxHoodScrews][4];
     };
 
     struct Target
@@ -1036,6 +1102,11 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
             sc->panelRect[2] = scene.panelRect[2] + offset; sc->panelRect[3] = scene.panelRect[3];
         }
         sc->panelSurround[0] = scene.panelSurround;
+        for (int i = 0; i < 3; ++i) sc->hoodFlange[i] = scene.hoodFlange[i];
+        const int screws = static_cast<int>(scene.hoodScrews.size() < kMaxHoodScrews ? scene.hoodScrews.size() : kMaxHoodScrews);
+        sc->hoodFlange[3] = static_cast<float>(screws);
+        for (int i = 0; i < screws; ++i)
+            for (int k = 0; k < 3; ++k) sc->hoodScrews[i][k] = scene.hoodScrews[i][k];
         g_hoodTopPx = scene.originY + scene.hoodTop * scene.pxPerInch;
         g_acrylics = scene.acrylics;
         for (const CabinetShape& sh : scene.shapes)
