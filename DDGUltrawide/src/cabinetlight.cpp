@@ -671,11 +671,16 @@ float3 HoodShade(float3 X, float3 N, float3 r)
     float in_ = hw - abs(X.x);                          // in from the end
     float3 n = N;
     float diffuseK = 1, glossK = 1;
-    // Rounded over where the top meets the front
-    if (isTop && X.z > D - HOOD_BEND) n = normalize(n + float3(0, -hood.w, 1) * (X.z - (D - HOOD_BEND)) / HOOD_BEND);
+    // Rounded over where the top meets the front. Across the bend, its
+    // reflection sweeps from the screen, over the ceiling, to the booth behind
+    // the player, all within a pixel or two: it shows their blend, a soft line.
+    // So it's blurred there by how far the bend turns (the rounded ends turn
+    // the whole way).
+    float bend = isTop ? saturate((X.z - (D - HOOD_BEND)) / HOOD_BEND) : isFront ? saturate(1 - s / HOOD_BEND) : 1;
+    if (isTop) n = normalize(n + float3(0, -hood.w, 1) * bend);
     if (isFront)
     {
-        if (s < HOOD_BEND) n = normalize(n + float3(0, -1, 0) * (1 - s / HOOD_BEND));
+        n = normalize(n + float3(0, -1, 0) * bend);
         if (s > hood2.y) { diffuseK = 1.7; glossK = 0.5; }
         else if (in_ > hoodGrille.x && in_ < hoodGrille.z && s > hoodGrille.y && s < hoodGrille.w) { diffuseK = 0.4; glossK = 0.1; }
         else if (abs(in_ - hood2.z) < 0.03) { diffuseK = 0.3; glossK = 0.2; }
@@ -692,7 +697,7 @@ float3 HoodShade(float3 X, float3 N, float3 r)
     float c = saturate(dot(-r, n));
     float3 r2 = r + 2 * c * n;
     float t;
-    return diffuse + Fresnel(max(c, 1e-3), 1.5) * glossK * SeenFar(X + N * 0.02, r2, HOOD_SPREAD, t);
+    return diffuse + Fresnel(max(c, 1e-3), 1.5) * glossK * SeenFar(X + N * 0.02, r2, HOOD_SPREAD + 0.5 * bend, t);
 }
 
 // What's seen from P looking along r: as SeenFar, unless the hood is in the way
