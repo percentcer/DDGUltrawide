@@ -10,6 +10,7 @@
 #include <d3dcompiler.h>
 #include <MinHook.h>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <cwchar>
 #include <vector>
@@ -68,6 +69,67 @@ namespace
     bool g_failed = false;
     bool g_loggedFirst = false;
 
+    // Perspective (ArcadeCameraDistance): the main window is drawn flat onto this
+    // canvas (wider than the window by a margin each side), then warped into it
+    ID3D11PixelShader* g_psWarp = nullptr;
+    ID3D11Buffer* g_warpCB = nullptr;
+    ID3D11Texture2D* g_canvasTex = nullptr;
+    ID3D11RenderTargetView* g_canvasRTV = nullptr;
+    ID3D11ShaderResourceView* g_canvasSRV = nullptr;
+    int g_canvasW = 0, g_canvasH = 0;
+    bool g_loggedPerspective = false;
+    float g_shownFov = 0;       // the main window's field of view, as last drawn
+
+    // Hotkeys, while the game (or one of our windows) has the focus, repeating
+    // while held: Ctrl+Alt+Up / Down move the perspective camera closer or
+    // farther (ArcadeCameraDistance), Ctrl+Alt+Left / Right narrow or widen its
+    // field of view (ArcadeFov)
+    struct Hotkey
+    {
+        int vk;
+        bool fov;               // else the distance
+        float step;
+        ULONGLONG next = 0;     // when it repeats; 0 while it's up
+    };
+    Hotkey g_hotkeys[] = { { VK_UP, false, -50.0f }, { VK_DOWN, false, 50.0f },
+                           { VK_LEFT, true, -5.0f }, { VK_RIGHT, true, 5.0f } };
+
+    void PollHotkeys()
+    {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+        const bool modifiers = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000);
+        const ULONGLONG now = GetTickCount64();
+        for (Hotkey& k : g_hotkeys)
+        {
+            if (pid != GetCurrentProcessId() || !modifiers || !(GetAsyncKeyState(k.vk) & 0x8000)) { k.next = 0; continue; }
+            if (k.next != 0 && now < k.next) continue;
+            k.next = now + (k.next == 0 ? 400 : 80);     // a pause before it repeats
+
+            if (!g_cfg.arcadeLayout || !g_cfg.arcadeCabinet) continue;
+            // From flat, or the field of view that fills the window, start from what's shown
+            float& setting = k.fov ? g_cfg.arcadeFovDeg : g_cfg.arcadeCameraMm;
+            float from = setting;
+            if (from <= 0) from = k.fov ? (g_cfg.arcadeCameraMm > 0 ? g_shownFov : 0) : 2250.0f - k.step;
+            if (from <= 0) continue;
+            const float size = std::fabs(k.step);
+            const float value = k.fov ? std::fmin(std::fmax(std::round((from + k.step) / size) * size, 10.0f), 170.0f)
+                                      : std::fmin(std::fmax(std::round((from + k.step) / size) * size, 100.0f), 10000.0f);
+            if (value == setting) continue;
+            setting = value;
+            g_loggedPerspective = false;
+            CabinetLightInvalidate();
+            LOG("%s=%.0f (hotkey)", k.fov ? "ArcadeFov" : "ArcadeCameraDistance", value);
+        }
+    }
+
+    struct WarpConstants
+    {
+        float out[4];      // window width, height; canvas width; canvas offset
+        float geo[4];      // center picture's middle (window px x, y); pixels per inch; corner (inches)
+        float cam[4];      // sin, cos of the side faces' turn; camera distance (inches)
+    };
+
     // Per-draw constants: where to draw (fractions of the output) and what to sample
     // (UVs of the game image), plus a clamp rect so sampling never bleeds into a
     // neighboring quadrant.
@@ -105,6 +167,32 @@ float4 PSMain(VSOut i) : SV_Target
 {
     float2 uv = clamp(i.uv, clampRect.xy, clampRect.zw);
     return float4(tex.Sample(smp, uv).rgb, 1);
+}
+
+// Perspective warp: each window pixel shows the flat canvas (t0) where its
+// camera ray lands. Within the corners (the center wall, seen straight on) that's
+// the same point; past them, the ray meets a side cabinet's face, turned toward
+// the camera, at a point that sits further out on the flat drawing.
+cbuffer Warp : register(b1)
+{
+    float4 wOut;     // window width, height; canvas width; canvas offset
+    float4 wGeo;     // center picture's middle (window px); pixels per inch; corner (inches)
+    float4 wCam;     // sin, cos of the faces' turn; camera distance (inches)
+};
+float4 PSWarp(VSOut i) : SV_Target
+{
+    float2 f = (i.pos.xy - wGeo.xy) / wGeo.z;          // inches from the center picture's middle
+    float ax = abs(f.x);
+    if (ax > wGeo.w)
+    {
+        float sa = wCam.x, ca = wCam.y, Z = wCam.z, c0 = wGeo.w;
+        float t = (sa * c0 + ca * Z) / (sa * ax + ca * Z);    // along the camera ray, to the face
+        float along = ca * (t * ax - c0) + sa * Z * (1 - t);  // along the face from the corner
+        f = float2(sign(f.x) * (c0 + along), t * f.y);
+    }
+    float2 px = f * wGeo.z + wGeo.xy + float2(wOut.w, 0);
+    if (px.x < 0 || px.x > wOut.z) return float4(0, 0, 0, 1);   // past the canvas: left dark
+    return float4(tex.SampleLevel(smp, px / float2(wOut.z, wOut.y), 0).rgb, 1);
 }
 )";
 
@@ -303,6 +391,28 @@ float4 PSMain(VSOut i) : SV_Target
         SafeRelease(vsBlob);
         SafeRelease(psBlob);
         if (!ok) { LOG("Shader creation failed"); return false; }
+
+        // The perspective warp (optional: without it the window is drawn flat)
+        if (SUCCEEDED(D3DCompile(kShader, len, "compositor", nullptr, nullptr, "PSWarp", "ps_4_0", 0, 0, &psBlob, &err)))
+        {
+            D3D11_BUFFER_DESC wb = {};
+            wb.ByteWidth = sizeof(WarpConstants);
+            wb.Usage = D3D11_USAGE_DYNAMIC;
+            wb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            wb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            if (FAILED(g_dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_psWarp))
+                || FAILED(g_dev->CreateBuffer(&wb, nullptr, &g_warpCB)))
+            {
+                SafeRelease(g_psWarp);
+                SafeRelease(g_warpCB);
+            }
+            SafeRelease(psBlob);
+        }
+        else
+        {
+            LOG("Perspective warp unavailable: %s", err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
+            SafeRelease(err);
+        }
 
         D3D11_BUFFER_DESC cbd = {};
         cbd.ByteWidth = sizeof(DrawConstants);
@@ -542,20 +652,38 @@ float4 PSMain(VSOut i) : SV_Target
     // ---------------------------------------------------------------------
     // Per-frame compositing
     // ---------------------------------------------------------------------
+    bool EnsureCanvas(int w, int h);
+
     void DrawRegions(int window)
     {
         Output& o = g_outs[window];
-        const bool cabinet = window == kMainWindow && CabinetLightRender(g_ctx, o.w, o.h, g_srcSRV, o.rtv);
+
+        // With perspective, draw flat onto the wider canvas, then warp it into the window
+        PerspectiveView view;
+        const bool perspective = window == kMainWindow && g_psWarp && GetPerspective(o.w, o.h, view)
+                                 && EnsureCanvas(o.w + 2 * view.marginPx, o.h);
+        const int canvasW = perspective ? o.w + 2 * view.marginPx : o.w;
+        const int offset = perspective ? view.marginPx : 0;
+        ID3D11RenderTargetView* target = perspective ? g_canvasRTV : o.rtv;
+        if (perspective) g_shownFov = view.fovDeg;
+        if (perspective && !g_loggedPerspective)
+        {
+            g_loggedPerspective = true;
+            LOG("Perspective: camera %.0f mm from the center screen, %.1f degree field of view, side faces turned %.0f degrees, canvas %dx%d",
+                view.cameraIn * 25.4f, view.fovDeg, std::atan2(view.sinA, view.cosA) * 57.29578f, canvasW, o.h);
+        }
+
+        const bool cabinet = window == kMainWindow && CabinetLightRender(g_ctx, o.w, o.h, canvasW, offset, g_srcSRV, target);
         const std::vector<Placement> placements = Placements(window, o.w, o.h);
 
         D3D11_VIEWPORT vp = {};
-        vp.Width = static_cast<float>(o.w);
+        vp.Width = static_cast<float>(canvasW);
         vp.Height = static_cast<float>(o.h);
         vp.MaxDepth = 1.0f;
 
         const float black[4] = { 0, 0, 0, 1 };
-        g_ctx->OMSetRenderTargets(1, &o.rtv, nullptr);
-        if (!cabinet) g_ctx->ClearRenderTargetView(o.rtv, black);
+        g_ctx->OMSetRenderTargets(1, &target, nullptr);
+        if (!cabinet) g_ctx->ClearRenderTargetView(target, black);
         g_ctx->RSSetViewports(1, &vp);
         g_ctx->RSSetState(g_rs);
         g_ctx->OMSetBlendState(g_blend, nullptr, 0xFFFFFFFF);
@@ -579,8 +707,10 @@ float4 PSMain(VSOut i) : SV_Target
             const Rect& d = p.dest;
             const Rect& s = p.source;
             DrawConstants c;
-            c.dst[0] = d.originX; c.dst[1] = d.originY;
-            c.dst[2] = d.originX + d.sizeX; c.dst[3] = d.originY + d.sizeY;
+            // Window fractions, into the canvas
+            const float sx = static_cast<float>(o.w) / canvasW, ox = static_cast<float>(offset) / canvasW;
+            c.dst[0] = d.originX * sx + ox; c.dst[1] = d.originY;
+            c.dst[2] = (d.originX + d.sizeX) * sx + ox; c.dst[3] = d.originY + d.sizeY;
             c.src[0] = s.originX; c.src[1] = s.originY;
             c.src[2] = s.originX + s.sizeX; c.src[3] = s.originY + s.sizeY;
             // Keep the sample footprint inside the region
@@ -597,6 +727,69 @@ float4 PSMain(VSOut i) : SV_Target
         // Don't leave our view bound where the game might try to write to the texture
         ID3D11ShaderResourceView* nullSRV = nullptr;
         g_ctx->PSSetShaderResources(0, 1, &nullSRV);
+
+        if (perspective)
+        {
+            // The warp: the whole window, sampling the canvas
+            const DrawConstants full = { { 0, 0, 1, 1 }, { 0, 0, 1, 1 }, { 0, 0, 1, 1 } };
+            const WarpConstants w = {
+                { static_cast<float>(o.w), static_cast<float>(o.h), static_cast<float>(canvasW), static_cast<float>(offset) },
+                { view.originX, view.originY, view.pxPerInch, view.cornerIn },
+                { view.sinA, view.cosA, view.cameraIn, 0 } };
+            D3D11_MAPPED_SUBRESOURCE m;
+            if (SUCCEEDED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+            {
+                memcpy(m.pData, &full, sizeof(full));
+                g_ctx->Unmap(g_cb, 0);
+            }
+            if (SUCCEEDED(g_ctx->Map(g_warpCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+            {
+                memcpy(m.pData, &w, sizeof(w));
+                g_ctx->Unmap(g_warpCB, 0);
+            }
+            D3D11_VIEWPORT wv = {};
+            wv.Width = static_cast<float>(o.w);
+            wv.Height = static_cast<float>(o.h);
+            wv.MaxDepth = 1.0f;
+            g_ctx->OMSetRenderTargets(1, &o.rtv, nullptr);
+            g_ctx->RSSetViewports(1, &wv);
+            g_ctx->PSSetShader(g_psWarp, nullptr, 0);
+            g_ctx->PSSetConstantBuffers(1, 1, &g_warpCB);
+            g_ctx->PSSetShaderResources(0, 1, &g_canvasSRV);
+            g_ctx->Draw(4, 0);
+            g_ctx->PSSetShaderResources(0, 1, &nullSRV);
+        }
+    }
+
+    // The flat canvas for the perspective warp, recreated when its size changes
+    bool EnsureCanvas(int w, int h)
+    {
+        if (g_canvasRTV && w == g_canvasW && h == g_canvasH) return true;
+        SafeRelease(g_canvasSRV);
+        SafeRelease(g_canvasRTV);
+        SafeRelease(g_canvasTex);
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width = w;
+        td.Height = h;
+        td.MipLevels = 1;
+        td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(g_dev->CreateTexture2D(&td, nullptr, &g_canvasTex))
+            || FAILED(g_dev->CreateRenderTargetView(g_canvasTex, nullptr, &g_canvasRTV))
+            || FAILED(g_dev->CreateShaderResourceView(g_canvasTex, nullptr, &g_canvasSRV)))
+        {
+            LOG("Could not create the perspective canvas (%dx%d)", w, h);
+            SafeRelease(g_canvasSRV);
+            SafeRelease(g_canvasRTV);
+            SafeRelease(g_canvasTex);
+            return false;
+        }
+        g_canvasW = w;
+        g_canvasH = h;
+        return true;
     }
 
     bool IsOurChain(IDXGISwapChain* chain)
@@ -665,6 +858,7 @@ float4 PSMain(VSOut i) : SV_Target
         SafeRelease(bb);
         if (g_srcMips) g_ctx->GenerateMips(g_srcSRV);
 
+        PollHotkeys();
         Backup(g_backup);
         for (int w = 0; w < kWindowCount; ++w)
             if (g_outs[w].chain) DrawRegions(w);

@@ -166,6 +166,9 @@ void LoadConfig(const std::wstring& ini)
     float scaling;
     if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeTouchPanelScaling", L""), scaling)) g_cfg.panelScaling = scaling;
     g_cfg.arcadeCabinet = ReadInt(ini, L"Layout", L"ArcadeCabinet", 1) != 0;
+    float persp;
+    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCameraDistance", L""), persp)) g_cfg.arcadeCameraMm = std::fmax(persp, 0.0f);
+    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeFov", L""), persp)) g_cfg.arcadeFovDeg = std::fmin(std::fmax(persp, 0.0f), 170.0f);
     float light;
     if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetScreenNits", L""), light)) g_cfg.cabinetScreenNits = std::fmax(light, 1.0f);
     if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetRoomLux", L""), light)) g_cfg.cabinetRoomLux = std::fmax(light, 0.0f);
@@ -269,6 +272,9 @@ namespace
     // width in inches (16:9) converts inches on the cabinet (gaps, frames) to pixels.
     constexpr float kSideScale = 43.0f / 55.0f;
     constexpr float kCenterWidthInches = 55.0f * 16.0f / 18.357560f;   // 18.36 = sqrt(16^2 + 9^2)
+    // The side cabinets' faces turn this far toward the player from the corner
+    // where they meet the center cabinet (the manual's plan view, page 10)
+    constexpr float kFaceAngleDeg = 55.0f;
 
     // ---------------------------------------------------------------------
     // The drawn cabinet (ArcadeCabinet), in cabinet inches, measured from video
@@ -357,6 +363,30 @@ namespace
         return kFrames[s].border + kFrames[s].bottomRail + (kFrames[s].bottomBracket ? kBracketIn : 0.0f);
     }
 
+    // Whether the arcade layout's cabinet is seen in perspective (it uses the
+    // cabinet's geometry)
+    bool PerspectiveOn()
+    {
+        return g_cfg.arcadeLayout && g_cfg.arcadeCabinet && g_cfg.arcadeCameraMm > 0;
+    }
+
+    // The perspective camera's distance from the center screen, in inches
+    float CameraIn()
+    {
+        return std::fmax(g_cfg.arcadeCameraMm, 50.0f) / 25.4f;
+    }
+
+    // Seen from the camera, what a side face shows at x (from the center
+    // picture's middle, past the corner c0; all in the same units): how far
+    // along the face from the corner, and t, the fraction of the way along the
+    // camera ray to the face (flat drawing = view * t, vertically). The face
+    // turns by sa, ca toward a camera Z from the center screen.
+    void FaceAt(float x, float c0, float sa, float ca, float Z, float& along, float& t)
+    {
+        t = (sa * c0 + ca * Z) / (sa * x + ca * Z);
+        along = ca * (t * x - c0) + sa * Z * (1 - t);
+    }
+
     // The arcade layout in a width x height window: the three forward screens at
     // their cabinet proportions, side by side with a flush bottom edge, and (when
     // it isn't in its own window) the touch panel centered under the center screen
@@ -389,23 +419,64 @@ namespace
         auto scale = [&](float inches) { return cabinet ? inches / kCenterWidthInches : 0.0f; };
         const float sideScale[3] = { scale(FrameSideIn(0)), scale(FrameSideIn(1)), scale(FrameSideIn(2)) };   // one frame side
         const float aboveScale = scale(FrameAboveIn(1)), belowScale = scale(FrameBelowIn(1));
-        const float rowWidth = 1 + 2 * kSideScale + 2 * gapScale                        // 3 screens, 2 gaps,
-                             + 2 * (sideScale[0] + sideScale[1] + sideScale[2]);        // 6 frame sides
+        const float rowWidth = 1 + 2 * kSideScale + 2 * gapScale                              // 3 screens, 2 gaps,
+                       + 2 * (sideScale[0] + sideScale[1] + sideScale[2]);              // 6 frame sides
         const float rowHeight = 9.0f / 16.0f + aboveScale + belowScale;                 // center screen and its frame
-
         // Center screen: limited by the width or the height (left over under the
         // panel, or all of it when overlap is allowed)
+        const bool perspective = PerspectiveOn();
         const float widthLimit = W / rowWidth;
-        const bool overlap = withPanel && g_cfg.allowPanelOverlap &&
+        const bool overlap = !perspective && withPanel && g_cfg.allowPanelOverlap &&
                              std::fmin(widthLimit, H / rowHeight) * rowHeight + panelH > H;
-        const float centerW = std::fmin(widthLimit, (overlap ? H : H - panelH) / rowHeight);
+        float centerW = std::fmin(widthLimit, (overlap ? H : H - panelH) / rowHeight);
+
+        // With perspective (ArcadeCameraDistance), the view is a camera's: the
+        // side frames, turned toward it, grow toward their outer edges, and
+        // whatever falls outside its field of view is cut off. The center screen
+        // is sized by that field of view (ArcadeFov), or by default fills the
+        // window: its frame (with the panel below) fits the height, and the
+        // frame out to the corners the width.
+        float middleY = 0;                                                               // the center picture's middle
+        if (perspective)
+        {
+            const float colAbove = 9.0f / 32.0f + aboveScale, colBelow = 9.0f / 32.0f + belowScale;
+            const float camera = CameraIn() / kCenterWidthInches;                        // in center widths
+            if (g_cfg.arcadeFovDeg > 0)
+                centerW = W / (2 * camera * std::tan(g_cfg.arcadeFovDeg * 3.14159265f / 360));
+            else
+                centerW = std::fmin(W / (1 + 2 * sideScale[1]), (H - panelH) / (colAbove + colBelow));
+
+            // How tall the side frames get where they leave the view (or end)
+            const float angle = kFaceAngleDeg * 3.14159265f / 180, ca = std::cos(angle), sa = std::sin(angle);
+            const float corner = 0.5f + sideScale[1];
+            const float span = kSideScale + 2 * sideScale[0];                            // a side frame, flat
+            float along = span, t = 1;
+            const float edge = W / 2 / centerW;
+            if (edge > corner) FaceAt(edge, corner, sa, ca, camera, along, t);
+            else along = 0;
+            along = std::fmin(std::fmax(along, 0.0f), span);
+            const float k = camera / std::fmax(camera - along * sa, 0.01f);
+            const float sideTop = 9.0f / 32.0f - 9.0f / 16.0f * kSideScale - scale(FrameAboveIn(0));
+            const float sideBottom = 9.0f / 32.0f + scale(FrameBelowIn(0));
+
+            // Center everything vertically when it all fits; otherwise, as close
+            // to that as keeps the center column (and the panel) in view
+            const float allAbove = centerW * std::fmax(colAbove, -sideTop * k);
+            const float allBelow = std::fmax(centerW * colBelow + panelH, centerW * sideBottom * k);
+            const float colTop = centerW * colAbove, colBottom = centerW * colBelow + panelH;
+            middleY = (H - (allAbove + allBelow)) / 2 + allAbove;
+            if (colTop + colBottom <= H)
+                middleY = std::fmin(std::fmax(middleY, colTop), H - colBottom);
+            else
+                middleY = (H - (colTop + colBottom)) / 2 + colTop;
+        }
         const float centerH = centerW * 9.0f / 16.0f;
         const float sideW = centerW * kSideScale, sideH = centerH * kSideScale;
         const float gap = centerW * gapScale;
         const float above = centerW * aboveScale, below = centerW * belowScale;
 
-        const float left = (W - centerW * rowWidth) / 2 + centerW * sideScale[0];   // left screen's picture
-        const float top = (overlap ? 0.0f : (H - (centerW * rowHeight + panelH)) / 2) + above;
+        float top = (overlap ? 0.0f : (H - (centerW * rowHeight + panelH)) / 2) + above;
+        if (perspective) top = middleY - centerW * 9.0f / 32.0f;
         const float bottom = top + centerH;    // shared bottom edge of the forward screens
         const float panelTop = overlap ? H - panelH : bottom + below;
 
@@ -413,7 +484,8 @@ namespace
         auto px = [](float v) { return static_cast<float>(std::floor(v + 0.5f)); };
         const float betweenL = centerW * (sideScale[0] + sideScale[1]) + gap;   // left picture to center picture
         const float betweenR = centerW * (sideScale[1] + sideScale[2]) + gap;   // center picture to right picture
-        const float centerL = left + sideW + betweenL, centerR = centerL + centerW;
+        const float centerL = (W - centerW) / 2, centerR = centerL + centerW;
+        const float left = centerL - betweenL - sideW;                          // left screen's picture
         const float x0 = px(left), x1 = px(left + sideW), x2 = px(centerL), x3 = px(centerR);
         const float x4 = px(centerR + betweenR), x5 = px(centerR + betweenR + sideW);
         const float yb = px(bottom), yc = px(top), ys = px(bottom - sideH);
@@ -499,7 +571,6 @@ namespace
     // screens, and the ceiling (under the ~90 mm roof) about 2070 mm up. The center
     // picture's middle is about 1495 mm up (the monitor ends 6 mm below the 1840 mm
     // center cabinet's top). All of it is the cabinet's paint; the floor is dark.
-    constexpr float kFaceAngleDeg = 55.0f;
     constexpr float kBoothHalfWidthMm = 1191.0f;
     constexpr float kBackWallMm = 1317.0f;
     constexpr float kCeilingMm = 2070.0f;
@@ -807,5 +878,42 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
                     addPatch(q.p, q.ez, faceLen / 3 * h / 4, dark(fx, fy) ? glassLin : wallLin);
                 }
     }
+    return true;
+}
+
+bool GetPerspective(int width, int height, PerspectiveView& v)
+{
+    v = {};
+    if (!PerspectiveOn() || width <= 0 || height <= 0) return false;
+    const float W = static_cast<float>(width), H = static_cast<float>(height);
+    Rect c = {};
+    bool found = false;
+    for (const Placement& p : Placements(kMainWindow, width, height))
+        if (p.screen == 1) { c = p.dest; found = true; }
+    if (!found) return false;
+    v.pxPerInch = c.sizeX * W / kCenterWidthInches;
+    v.originX = (c.originX + c.sizeX / 2) * W;
+    v.originY = (c.originY + c.sizeY / 2) * H;
+    v.cornerIn = kCenterWidthInches / 2 + FrameSideIn(1);
+    const float angle = kFaceAngleDeg * 3.14159265f / 180;
+    v.sinA = std::sin(angle);
+    v.cosA = std::cos(angle);
+    v.cameraIn = CameraIn();
+    v.fovDeg = 2 * std::atan(W / 2 / v.pxPerInch / v.cameraIn) * 57.29578f;
+
+    // How far past the output's edges the flat drawing reaches, for what the
+    // output's edges show: the canvas is widened by that much on each side
+    // (the cabinet's wall continues past the side frames, as it does flat)
+    const float edge = std::fmax(v.originX, W - v.originX) / v.pxPerInch;   // inches, to the farther edge
+    float flatEdge = edge;
+    if (edge > v.cornerIn)
+    {
+        float along, t;
+        FaceAt(edge, v.cornerIn, v.sinA, v.cosA, v.cameraIn, along, t);
+        flatEdge = v.cornerIn + along;
+    }
+    const int widest = (16384 - width) / 2 - 2;                                  // the largest texture there is
+    v.marginPx = static_cast<int>(std::ceil(std::fmax(0.0f, (flatEdge - edge) * v.pxPerInch))) + 2;
+    if (v.marginPx > widest) v.marginPx = widest;
     return true;
 }

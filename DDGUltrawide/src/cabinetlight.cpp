@@ -493,8 +493,8 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
 
     Target g_gbuffer[3], g_cells, g_patches, g_patches2, g_cube[6], g_gloss[5];
     constexpr int kBounces = 2;             // patch-to-patch bounces after the direct light
-    int g_w = 0, g_h = 0;
-    bool g_built = false;       // for g_w x g_h
+    int g_outW = 0, g_w = 0, g_h = 0, g_offset = 0;
+    bool g_built = false;       // for these sizes
     bool g_enabled = false;     // the cabinet is drawn at this size
     int g_cellCount = 0, g_patchCount = 0;
 
@@ -556,13 +556,17 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
     }
 
     // Builds everything that only depends on the window size: the G-buffer, the
-    // scene constants, and the per-frame targets.
-    void Build(ID3D11DeviceContext* ctx, int w, int h)
+    // scene constants, and the per-frame targets. The scene is laid out for an
+    // outW x h window and drawn into a w x h canvas, offset to the right by offset
+    // (a canvas wider than the window, for the perspective warp).
+    void Build(ID3D11DeviceContext* ctx, int outW, int h, int w, int offset)
     {
         g_built = true;
         g_enabled = false;
+        g_outW = outW;
         g_w = w;
         g_h = h;
+        g_offset = offset;
         for (Target& t : g_gbuffer) t.Release();
         for (Target& t : g_cube) t.Release();
         for (Target& t : g_gloss) t.Release();
@@ -571,7 +575,18 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
         g_patches2.Release();
 
         CabinetScene scene;
-        if (!GetCabinetScene(w, h, scene)) return;
+        if (!GetCabinetScene(outW, h, scene)) return;
+        if (offset != 0 || w != outW)
+        {
+            // Shift into the canvas; the wall (the first shape) covers all of it
+            for (CabinetShape& sh : scene.shapes)
+            {
+                sh.x0 += offset;
+                if (sh.kind != CabinetShape::Dome) sh.x1 += offset;
+            }
+            if (!scene.shapes.empty()) { scene.shapes[0].x0 = 0; scene.shapes[0].x1 = static_cast<float>(w); }
+            scene.originX += offset;
+        }
         g_cellCount = static_cast<int>(scene.cells.size() < kMaxCells ? scene.cells.size() : kMaxCells);
         g_patchCount = static_cast<int>(scene.patches.size() < kMaxPatches ? scene.patches.size() : kMaxPatches);
         if (g_cellCount == 0) return;
@@ -713,11 +728,17 @@ bool CabinetLightInit(ID3D11Device* dev)
     return ok;
 }
 
-bool CabinetLightRender(ID3D11DeviceContext* ctx, int width, int height,
+void CabinetLightInvalidate()
+{
+    g_built = false;
+}
+
+bool CabinetLightRender(ID3D11DeviceContext* ctx, int outWidth, int height, int width, int offset,
                         ID3D11ShaderResourceView* frame, ID3D11RenderTargetView* target)
 {
     if (!g_psShade || !frame || !target) return false;
-    if (!g_built || width != g_w || height != g_h) Build(ctx, width, height);
+    if (!g_built || outWidth != g_outW || width != g_w || height != g_h || offset != g_offset)
+        Build(ctx, outWidth, height, width, offset);
     if (!g_enabled) return false;
 
     CommonState(ctx);

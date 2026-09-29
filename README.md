@@ -51,7 +51,13 @@ See the comments in `DDGUltrawide.ini`. In short:
   automatically for your output size, and drawn inside a picture of the
   cabinet (`ArcadeCabinet`: its walls in `ArcadeCabinetColor`, a metal frame
   with screws around each screen, and the console), lit by the game's own
-  screens (`ArcadeCabinetScreenNits`, `ArcadeCabinetRoomLux`). `ArcadeTouchPanelScaling`
+  screens (`ArcadeCabinetScreenNits`, `ArcadeCabinetRoomLux`), with the side
+  cabinets turned toward you in perspective (`ArcadeCameraDistance`, how far
+  you stand from the center screen in mm, 2250 by default, 0 = flat; and
+  `ArcadeFov`, the horizontal field of view in degrees, 0 = the center screen
+  fills the window, cutting off what doesn't fit; while playing, Ctrl+Alt+Up /
+  Down move you closer / farther and Ctrl+Alt+Left / Right narrow / widen the
+  view). `ArcadeTouchPanelScaling`
   (0.75 by default) sets the touch panel's size, trading it against the forward
   screens', and `ArcadeTouchPanelAllowOverlap=1` lets the screens use the full
   width by drawing the touch panel over the bottom edge of the center screen.

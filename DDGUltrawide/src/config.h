@@ -26,6 +26,8 @@ struct Config
     bool allowPanelOverlap = false;     // let the touch panel cover the center screen's bottom edge
     float panelScaling = 0.75f;         // touch panel size, relative to a third of the output's height
     bool arcadeCabinet = true;          // draw the cabinet (wall, screen frames, console) around the screens
+    float arcadeCameraMm = 2250.0f;     // perspective camera in front of the center screen (0 = flat)
+    float arcadeFovDeg = 0.0f;          // its horizontal field of view (0 = the center screen fills the window)
     float cabinetColor[3] = { 0xBA / 255.0f, 0xB3 / 255.0f, 0xA5 / 255.0f };   // the cabinet's beige-gray
     float cabinetScreenNits = 1000.0f;  // the screens' white, cd/m^2
     float cabinetRoomLux = 0.0f;        // the arcade's own lighting falling on the cabinet, lux (0 = none)
@@ -133,3 +135,23 @@ struct CabinetScene
 // The cabinet (wall, screen frames, brackets, fasteners, console) and its
 // lighting setup. False when it isn't drawn.
 bool GetCabinetScene(int width, int height, CabinetScene& scene);
+
+// The perspective view of the arcade layout's cabinet (ArcadeCameraDistance): the
+// scene is drawn flat onto a canvas marginPx wider than the output on each side,
+// then warped. The center wall is seen straight on and stays as drawn; past the
+// corner, the side cabinets' faces turn toward a camera cameraIn behind the
+// center screen, and each output pixel there shows the point on the face its
+// camera ray hits.
+struct PerspectiveView
+{
+    float originX, originY;     // the center picture's middle (output pixels; the canvas is offset by marginPx)
+    float pxPerInch;
+    float cornerIn;             // where the side faces start, inches either side of the middle
+    float sinA, cosA;           // how far they turn toward the camera
+    float cameraIn;             // the camera's distance from the center screen
+    float fovDeg;               // the output's horizontal field of view
+    int marginPx;
+};
+
+// False when there's no perspective (it's off, or not the arcade layout's cabinet).
+bool GetPerspective(int width, int height, PerspectiveView& view);
