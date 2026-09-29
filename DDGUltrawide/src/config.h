@@ -155,6 +155,7 @@ struct CabinetScene
     // to), and its paint's albedo (linear)
     float hoodTop, hoodDepth, hoodSlope, hoodHeight, hoodFace, hoodSplit;
     float hoodGrille[4], hoodCorner, hoodOpening[3], hoodAlbedo;
+    float grilleCells[4];                   // the grilles' holes: across, down; radius and rim (of their spacing)
     // On its top: the center plate's flanges, resting on the end pieces (where
     // they start, either side of the middle; how wide; their sheet's
     // thickness), and the screws (x, z, head radius), black

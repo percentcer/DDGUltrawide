@@ -1,5 +1,4 @@
 ## software
-- draw speaker grills
 - draw that vertical seam visible near left panel
 - consider drawing the fasteners along the top panel
 - consider drawing the seam along the top panel

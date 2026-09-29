@@ -89,6 +89,7 @@ cbuffer Scene : register(b1)
     float4 hood;                    // the hood under the center screen: half width, top y, depth, slope
     float4 hood2;                   // its front's height, how much of it shows, where its pieces meet, albedo
     float4 hoodGrille;              // its speaker grilles: in from each end, down its front (from, to)
+    float4 grilleCells;             // their holes: across, down; radius, rim (of their spacing across)
     float4 hoodOpening;             // the touch monitor's opening: half width, down its front (from, to); corners' radius
     float4 panelRect;               // the touch panel in the canvas (px; 0 when it isn't there)
     float4 panelSurround;           // its surround (px)
@@ -743,7 +744,41 @@ float3 HoodShade(float3 X, float3 N, float3 r)
     {
         n = normalize(n + float3(0, -1, 0) * bend);
         if (s > hood2.y) { diffuseK = 1.7; glossK = 0.5; }
-        else if (in_ > hoodGrille.x && in_ < hoodGrille.z && s > hoodGrille.y && s < hoodGrille.w) { diffuseK = 0.4; glossK = 0.1; }
+        else if (in_ > hoodGrille.x && in_ < hoodGrille.z && s > hoodGrille.y && s < hoodGrille.w)
+        {
+            // A speaker grille: a honeycomb of round holes, black inside, their
+            // rims rounded over (catching the light). Smoothed over a pixel's
+            // footprint, and toward the grille's overall look where the holes
+            // get too small to see.
+            float2 cell = float2((hoodGrille.z - hoodGrille.x) / (grilleCells.x + 0.5), (hoodGrille.w - hoodGrille.y) / grilleCells.y);
+            float2 g = float2(in_ - hoodGrille.x, s - hoodGrille.y) / cell;     // in cells
+            float2 best = 0;
+            float d = 1e9;
+            // The nearest hole, of the grille's own (whole ones: no cut-off
+            // holes at its edges)
+            for (float row = floor(g.y) - 1; row <= floor(g.y) + 1; ++row)
+            {
+                if (row < 0 || row >= grilleCells.y) continue;
+                float stagger = 0.5 * fmod(row, 2);
+                float2 c = float2(clamp(floor(g.x - stagger), 0, grilleCells.x - 1) + 0.5 + stagger, row + 0.5);
+                // A regular honeycomb on the panel (in spacings): it leans back,
+                // so seen from the front (as the drawing is), its rows crowd
+                float dc = length((g - c) * float2(1, 0.866));
+                if (dc < d) { d = dc; best = c; }
+            }
+            float px = (sTarget.w > 0.5 ? max(eye.z - X.z, 1) / eye.z : 1) / view.z / cell.x;   // a pixel, in spacings
+            float R = grilleCells.z, W = grilleCells.w, a = max(px, 1e-3);
+            float hole = 1 - smoothstep(R - a, R + a, d);
+            float rim = (1 - hole) * (1 - smoothstep(R + W - a, R + W + a, d));
+            float seen = saturate(1.5 - px * 3);                                // 1 while a hole spans a few pixels
+            float2 toward = (best - g) * cell;                                  // toward the hole's middle (in, down)
+            float3 inward = toward.x * float3(-sign(X.x), 0, 0) + toward.y * normalize(float3(0, 1, hood.w));
+            n = normalize(n + normalize(inward + 1e-6) * 1.5 * rim * seen);
+            bend = max(bend, rim);
+            float open = lerp(3.14159 * R * R / 0.866, hole, seen);             // how much is hole (on average, far off)
+            diffuseK = 1 - open;
+            glossK = 1 - open;
+        }
         else if (abs(in_ - hood2.z) < 0.03) { diffuseK = 0.3; glossK = 0.2; }
         else if (abs(X.x) < hoodOpening.x && s > hoodOpening.y && s < hoodOpening.z) diffuseK = 0.4;
     }
@@ -751,6 +786,7 @@ float3 HoodShade(float3 X, float3 N, float3 r)
     // seen from, it glitters), and fading out toward the rounded edges, where it
     // would break up their thin highlights (none on the rounded ends at all)
     float edgeDist = isTop ? min(min(D - X.z, in_ - hoodOpening.w), abs(past)) : isFront ? s : 0;
+    if (isFront && in_ > hoodGrille.x && in_ < hoodGrille.z && s > hoodGrille.y && s < hoodGrille.w) edgeDist = 0;
     if (screw) edgeDist = 0;
     float2 peel = OrangePeel((isTop ? X.xz : X.xy) * view.z) * 0.2 * saturate(edgeDist / (2 * HOOD_BEND) - 0.5);
     n = normalize(n - (isTop ? float3(peel.x, 0, peel.y) : float3(peel, 0)));
@@ -867,7 +903,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         float cellPos[kMaxCells][4], cellNrm[kMaxCells][4], cellUV[kMaxCells][4];
         float patchPos[kMaxPatches][4], patchNrm[kMaxPatches][4], patchAlb[kMaxPatches][4];
         float counts[4], view[4], origin[4], light[4], wall[4], geom[4], booth[4], booth2[4], eye[4];
-        float hood[4], hood2[4], hoodGrille[4], hoodOpening[4], panelRect[4], panelSurround[4];
+        float hood[4], hood2[4], hoodGrille[4], grilleCells[4], hoodOpening[4], panelRect[4], panelSurround[4];
         float hoodFlange[4], hoodScrews[kMaxHoodScrews][4];
     };
 
@@ -1094,6 +1130,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         sc->hood2[2] = scene.hoodSplit;
         sc->hood2[3] = scene.hoodAlbedo;
         for (int i = 0; i < 4; ++i) sc->hoodGrille[i] = scene.hoodGrille[i];
+        for (int i = 0; i < 4; ++i) sc->grilleCells[i] = scene.grilleCells[i];
         for (int i = 0; i < 3; ++i) sc->hoodOpening[i] = scene.hoodOpening[i];
         sc->hoodOpening[3] = scene.hoodCorner;
         if (scene.panelRect[2] > scene.panelRect[0])

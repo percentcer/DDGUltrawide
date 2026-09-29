@@ -401,6 +401,13 @@ namespace
     constexpr float kHoodCornerMm = 30.0f;
     constexpr float kHoodSplitMm = 340.0f;
     constexpr float kHoodGrilleMm[4] = { 75.0f, 44.0f, 290.0f, 211.0f };      // in from the end, down: from, to
+    // Each grille is a honeycomb of round holes, 42 across and 44 down (counted
+    // on a real one; alternate rows staggered by half a hole), filling the
+    // grille: about 5.1 mm apart across, rows 3.8 mm apart. The holes take most
+    // of it, their rims rounded over, and they're black inside.
+    constexpr float kGrilleCells[2] = { 42.0f, 44.0f };
+    constexpr float kGrilleHole = 0.40f;        // the holes' radius, of the spacing across
+    constexpr float kGrilleRim = 0.10f;         // their rounded rims' width, likewise
     constexpr float kTouchOpeningMm[3] = { 481.0f, 183.0f, 40.0f };           // width, height, down from the top
     constexpr float kHoodAlbedo = 0.045f;       // black paint (sRGB)
     constexpr float kCenterAcrylicSpacerIn = 5.5f / 25.4f;
@@ -810,6 +817,10 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
     scene.hoodFace = Mm(kHoodFaceMm);
     scene.hoodSplit = Mm(kHoodSplitMm);
     for (int i = 0; i < 4; ++i) scene.hoodGrille[i] = Mm(kHoodGrilleMm[i]);
+    scene.grilleCells[0] = kGrilleCells[0];
+    scene.grilleCells[1] = kGrilleCells[1];
+    scene.grilleCells[2] = kGrilleHole;
+    scene.grilleCells[3] = kGrilleRim;
     scene.hoodCorner = Mm(kHoodCornerMm);
     scene.hoodOpening[0] = Mm(kTouchOpeningMm[0] / 2);
     scene.hoodOpening[1] = Mm(kTouchOpeningMm[2]);
