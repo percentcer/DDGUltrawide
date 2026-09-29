@@ -29,6 +29,8 @@
 //      its reflection off the sheet's front and back faces to what it hits:
 //      the booth (from the booth map), the hood, or the front of the cabinet
 //      itself (the screens and frames, as just drawn).
+//      The chrome screw heads are done the same way: each pixel's reflection
+//      off the head's curve, followed to what it hits.
 //   8. The hood, last: each pixel's view is traced to the hood (a box reaching
 //      out under the center screen), which takes its own light from the booth
 //      map and glossily reflects the rest.
@@ -104,6 +106,8 @@ Texture2D<float4> gloss1 : register(t10);  // looking -x
 Texture2D<float4> gloss2 : register(t11);  // looking +y (down)
 Texture2D<float4> gloss3 : register(t12);  // looking -y (up)
 Texture2D<float4> gloss4 : register(t13);  // looking +z (out, toward the player and the booth)
+Texture2D<float4> gAlbedo : register(t14);  // 7. (the chrome screws) the G-buffer's color
+Texture2D<float4> gGeo : register(t15);     // ...and its normals
 SamplerState linearClamp : register(s0);
 
 static const float GLOSS_POWER = 8;        // the gloss lobes: cos^8
@@ -153,15 +157,44 @@ GBuffer PSShape(float4 pos : SV_Position)
     float3 n = float3(0, 0, 1);
     float z = sParams.x;
     float cover = 1;
+    float3 albedo = sAlbedo.rgb;
+    float roughness = sMat.x;
     if (sParams.w > 1.5)
     {
-        // Dome: a low, rounded fastener head
+        // Dome: a fastener's button head. A broad, gently crowned top that
+        // rounds over at the shoulder down to its edge...
         float2 d = (p - sRect.xy) / sRect.z;
         float l = length(d);
         cover = saturate((1 - l) * sRect.z + 0.5);
-        float h = sqrt(saturate(1 - l * l));
-        n = normalize(float3(d, h * 1.3));
+        float2 dir = l > 1e-4 ? d / l : 0;
+        const float TOP = 0.5;                          // the top, out to this fraction of the radius
+        float h, dh;                                    // height (of the head's) and its slope, per radius
+        if (l < TOP) { h = 1 - 0.08 * (l / TOP) * (l / TOP); dh = -0.16 * l / (TOP * TOP); }
+        else
+        {
+            float k = min((l - TOP) / (1 - TOP), 0.98), q = sqrt(1 - k * k);
+            h = 0.92 * q;
+            dh = -0.92 * k / q / (1 - TOP);
+        }
+        n = normalize(float3(dir * -dh * sParams.z / (sRect.z / sMat.z), 1));
         z += sParams.z * h;
+
+        // ...and a tamper-proof Torx recess in it: a six-lobed star over half
+        // the head across, turned however it was driven in, with a pin standing
+        // in its middle. Its walls, just inside its edge, face in and catch the
+        // light (a bright rim around it, as in photos); its floor is dark.
+        float turn = frac(sin(dot(sRect.xy, float2(12.9898, 78.233))) * 43758.5453) * 6.2832;
+        float star = 0.33 + 0.08 * cos(6 * (atan2(d.y, d.x) + turn));
+        float aa = 1 / sRect.z;                         // a pixel, in radii
+        float recess = saturate((star - l) / aa + 0.5);
+        float wall = recess * saturate((l - (star - max(0.08, aa))) / aa + 0.5);
+        float pin = saturate((0.13 - l) / aa + 0.5);
+        float floor_ = saturate(recess - wall) * (1 - pin);
+        n = normalize(lerp(n, float3(dir * 0.3, 1), recess - wall));   // the pin's top, and the recess's floor: flat
+        n = normalize(lerp(n, float3(-dir, 1), wall));
+        z -= sParams.z * 0.5 * (floor_ + wall * 0.5);
+        albedo *= 1 - 0.75 * floor_;                    // the floor: deep, and in its own shadow
+        roughness = lerp(roughness, 0.7, floor_);
     }
     else if (sParams.w > 0.5)
     {
@@ -187,9 +220,9 @@ GBuffer PSShape(float4 pos : SV_Position)
         }
     }
     GBuffer o;
-    o.albedo = float4(sAlbedo.rgb, cover);
+    o.albedo = float4(albedo, cover);
     o.geo = float4(n.xy * 0.5 + 0.5, saturate(z / 16), cover);
-    o.mat = float4(sMat.x, sMat.y, sMat.w, cover);
+    o.mat = float4(roughness, sMat.y, sMat.w, cover);
     return o;
 }
 
@@ -702,6 +735,31 @@ float4 PSAcrylic(float4 pos : SV_Position) : SV_Target
     return float4(LinearToSrgb(saturate(under + reflected * sheet)), 1);
 }
 
+// ---- 7. (continued) The chrome screw heads: mirrors, curved. What's under
+// them (t0), the booth map (t1), and the G-buffer (t2, gAlbedo, gGeo), drawn
+// over what's there by how much of each pixel is metal ----
+float4 PSChrome(float4 pos : SV_Position) : SV_Target
+{
+    int3 ip = int3(pos.xy, 0);
+    float metal = t2.Load(ip).y;
+    if (metal < 0.01) discard;
+    float3 albedo = gAlbedo.Load(ip).rgb;
+    float4 geo = gGeo.Load(ip);
+    float2 nxy = geo.xy * 2 - 1;
+    float3 n = float3(nxy, sqrt(saturate(1 - dot(nxy, nxy))));
+    float3 ex, ez;
+    float3 P = Place(pos.xy, geo.z * 16, ex, ez);
+    float3 N = normalize(ex * n.x + float3(0, n.y, 0) + ez * n.z);    // from the surface's axes
+    float3 v = normalize(eye.xyz - P);
+    float c = saturate(dot(N, v));
+    float3 F = albedo + (1 - albedo) * pow(1 - c, 5);                // metal: tinted by its color
+    float3 r = 2 * c * N - v;
+    // What it mirrors, and the arcade's ceiling lights: a sharp glint
+    float3 L = F * (Seen(P + N * 0.05, r) + light.y * 2.5 * pow(saturate(dot(r, OVERHEAD)), 64)) * light.z;
+    L = L < 0.8 ? L : 0.8 + 0.2 * (1 - exp(-(L - 0.8) / 0.2));
+    return float4(LinearToSrgb(saturate(L)), metal);
+}
+
 // ---- 8. The hood: each pixel's view (from the camera, or straight on) traced
 // to it; the cabinet as drawn (t0) is what it reflects. Where it misses, and
 // where the touch panel is (it sits in the hood's opening), nothing's drawn. ----
@@ -781,6 +839,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     ID3D11PixelShader* g_psBoothMap = nullptr;
     ID3D11PixelShader* g_psAcrylic = nullptr;
     ID3D11PixelShader* g_psHood = nullptr;
+    ID3D11PixelShader* g_psChrome = nullptr;
     ID3D11Buffer* g_shapeCB = nullptr;
     ID3D11Buffer* g_sceneCB = nullptr;
     ID3D11BlendState* g_blendCover = nullptr;
@@ -794,6 +853,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     Target g_under;                         // 7. a copy of what's under the acrylic
     constexpr int kMap = 32, kMapFaces = 7; // the booth map (as in the shader)
     std::vector<CabinetAcrylic> g_acrylics;
+    std::vector<CabinetAcrylic> g_screws;   // the screw heads (their bounds; z unused)
     float g_hoodTopPx = 0;                  // the hood's top where it meets the wall, in the canvas
     constexpr int kBounces = 2;             // patch-to-patch bounces after the direct light
     int g_outW = 0, g_w = 0, g_h = 0, g_offset = 0;
@@ -854,8 +914,8 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
 
     void UnbindSRVs(ID3D11DeviceContext* ctx)
     {
-        ID3D11ShaderResourceView* none[14] = {};
-        ctx->PSSetShaderResources(0, 14, none);
+        ID3D11ShaderResourceView* none[16] = {};
+        ctx->PSSetShaderResources(0, 16, none);
     }
 
     // Builds everything that only depends on the window size: the G-buffer, the
@@ -878,6 +938,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         g_patches2.Release();
         g_boothMap.Release();
         g_acrylics.clear();
+        g_screws.clear();
 
         CabinetScene scene;
         if (!GetCabinetScene(outW, h, scene)) return;
@@ -972,6 +1033,9 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         sc->panelSurround[0] = scene.panelSurround;
         g_hoodTopPx = scene.originY + scene.hoodTop * scene.pxPerInch;
         g_acrylics = scene.acrylics;
+        for (const CabinetShape& sh : scene.shapes)
+            if (sh.kind == CabinetShape::Dome)
+                g_screws.push_back({ sh.x0 - sh.x1 - 1, sh.y0 - sh.x1 - 1, sh.x0 + sh.x1 + 1, sh.y0 + sh.x1 + 1, 0 });
         ctx->UpdateSubresource(g_sceneCB, 0, nullptr, sc, 0, 0);
         delete sc;
 
@@ -1048,7 +1112,7 @@ bool CabinetLightInit(ID3D11Device* dev)
     const bool ok = CreateVS("VSFull", &g_vsFull) && CreateVS("VSShape", &g_vsShape)
         && CreatePS("PSShape", &g_psShape) && CreatePS("PSCells", &g_psCells) && CreatePS("PSPatches", &g_psPatches) && CreatePS("PSBounce", &g_psBounce)
         && CreatePS("PSCube", &g_psCube) && CreatePS("PSGloss", &g_psGloss) && CreatePS("PSShade", &g_psShade)
-        && CreatePS("PSBoothMap", &g_psBoothMap) && CreatePS("PSAcrylic", &g_psAcrylic) && CreatePS("PSHood", &g_psHood)
+        && CreatePS("PSBoothMap", &g_psBoothMap) && CreatePS("PSAcrylic", &g_psAcrylic) && CreatePS("PSHood", &g_psHood) && CreatePS("PSChrome", &g_psChrome)
         && SUCCEEDED(dev->CreateBuffer(&sb, nullptr, &g_shapeCB))
         && SUCCEEDED(dev->CreateBuffer(&cb, nullptr, &g_sceneCB))
         && SUCCEEDED(dev->CreateBlendState(&bc, &g_blendCover))
@@ -1202,18 +1266,26 @@ bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* targe
     ctx->PSSetConstantBuffers(1, 1, &g_sceneCB);
     ID3D11ShaderResourceView* in[3] = { g_under.srv, g_boothMap.srv, g_gbuffer[2].srv };
     ctx->PSSetShaderResources(0, 3, in);
-    for (const CabinetAcrylic& a : g_acrylics)
+    ID3D11ShaderResourceView* gbuffer[2] = { g_gbuffer[0].srv, g_gbuffer[1].srv };
+    ctx->PSSetShaderResources(14, 2, gbuffer);
+    auto draw = [&](const CabinetAcrylic& a)
     {
         const ShapeConstants c = {
             { std::floor(a.x0 + 0.5f), std::floor(a.y0 + 0.5f), std::floor(a.x1 + 0.5f), std::floor(a.y1 + 0.5f) },
             { a.z, a.z, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 },
             { static_cast<float>(g_w), static_cast<float>(g_h), 0, 0 } };
         D3D11_MAPPED_SUBRESOURCE m;
-        if (FAILED(ctx->Map(g_shapeCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
+        if (FAILED(ctx->Map(g_shapeCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
         memcpy(m.pData, &c, sizeof(c));
         ctx->Unmap(g_shapeCB, 0);
         ctx->Draw(4, 0);
-    }
+    };
+    for (const CabinetAcrylic& a : g_acrylics) draw(a);
+
+    // The chrome screw heads, over it, blended in by how much of each pixel they cover
+    ctx->PSSetShader(g_psChrome, nullptr, 0);
+    ctx->OMSetBlendState(g_blendCover, nullptr, 0xFFFFFFFF);
+    for (const CabinetAcrylic& a : g_screws) draw(a);
     UnbindSRVs(ctx);
     return true;
 }

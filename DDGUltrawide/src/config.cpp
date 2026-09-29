@@ -666,7 +666,7 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
     const Material wallPaint = paint(1.0f), railPaint = paint(1.04f), seamPaint = paint(0.6f);
     const Material blackPlastic = { { 0.03f, 0.03f, 0.035f }, 0.45f, 0.0f, false };
     const Material consolePlastic = { { 0.07f, 0.075f, 0.08f }, 0.5f, 0.0f, false };
-    const Material chrome = { { 0.80f, 0.80f, 0.81f }, 0.3f, 1.0f, false };   // the screws: chrome, about 60% reflective
+    const Material chrome = { { 0.80f, 0.80f, 0.81f }, 0.12f, 1.0f, false };  // the screws: polished chrome, about 60% reflective
 
     std::vector<CabinetShape>& shapes = scene.shapes;
     auto px = [](float v) { return static_cast<float>(std::floor(v + 0.5f)); };
