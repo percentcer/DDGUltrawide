@@ -21,7 +21,10 @@ bool CabinetLightRender(ID3D11DeviceContext* ctx, int outWidth, int height, int 
 // the screens and cabinet show through, and the booth, lit by the screens,
 // reflects off both faces. Call after CabinetLightRender, with the same target.
 // False when there's nothing to draw. Changes the pipeline state.
-bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target);
+// Without sheets (the flat view: the side screens are drawn straight on, so
+// reflections off their turned faces wouldn't match), only the chrome screws
+// reflect, but what they and the hood reflect is still copied.
+bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, bool sheets);
 
 // The acrylic's reflections alone (linear, the canvas's size), from the last
 // CabinetLightReflect: for drawing the screens again, sharper, with them on top

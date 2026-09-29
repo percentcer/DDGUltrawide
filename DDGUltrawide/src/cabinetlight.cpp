@@ -975,6 +975,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     Target g_boothMap;                      // 6. the booth's surfaces
     Target g_under;                         // 7. a copy of what's under the acrylic
     Target g_reflections;                   // 7. the acrylic's reflections alone
+    bool g_sheetsDrawn = false;             // ...if the sheets were drawn
     constexpr int kMap = 32, kMapFaces = 7; // the booth map (as in the shader)
     std::vector<CabinetAcrylic> g_acrylics;
     std::vector<CabinetAcrylic> g_screws;   // the screw heads (their bounds; z unused)
@@ -1349,7 +1350,7 @@ bool CabinetLightRender(ID3D11DeviceContext* ctx, int outWidth, int height, int 
     return true;
 }
 
-bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target)
+bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, bool sheets)
 {
     if (!g_psAcrylic || !g_enabled || !target || g_acrylics.empty()) return false;
 
@@ -1418,7 +1419,9 @@ bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* targe
         ctx->Unmap(g_shapeCB, 0);
         ctx->Draw(4, 0);
     };
-    for (const CabinetAcrylic& a : g_acrylics) draw(a);
+    if (sheets)
+        for (const CabinetAcrylic& a : g_acrylics) draw(a);
+    g_sheetsDrawn = sheets;
 
     // The chrome screw heads, over it, blended in by how much of each pixel they cover
     ctx->OMSetRenderTargets(1, &target, nullptr);
@@ -1462,5 +1465,5 @@ bool CabinetLightHood(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, 
 
 ID3D11ShaderResourceView* CabinetLightReflections()
 {
-    return g_enabled && !g_acrylics.empty() ? g_reflections.srv : nullptr;
+    return g_enabled && g_sheetsDrawn && !g_acrylics.empty() ? g_reflections.srv : nullptr;
 }

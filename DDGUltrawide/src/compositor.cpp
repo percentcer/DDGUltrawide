@@ -751,8 +751,10 @@ float4 PSWarp(VSOut i) : SV_Target
         ID3D11ShaderResourceView* nullSRV = nullptr;
         g_ctx->PSSetShaderResources(0, 1, &nullSRV);
 
-        // The acrylic sheets over the screens, then our own state back for the warp
-        const bool acrylic = cabinet && CabinetLightReflect(g_ctx, target);
+        // The acrylic sheets over the screens (only in perspective: in the flat
+        // view the side screens face us, so reflections off their turned faces
+        // would be wrong), then our own state back for the warp
+        const bool acrylic = cabinet && CabinetLightReflect(g_ctx, target, perspective);
         if (acrylic && !perspective) CabinetLightHood(g_ctx, target, o.w, o.h, 0, false);
         if (acrylic)
         {
