@@ -19,6 +19,27 @@ namespace
     std::unordered_map<HWND, WNDPROC> g_origProcs;
     std::unordered_map<HWND, bool> g_locked;    // top-level: its client area is kept at the game's render size
     bool g_placed = false;                      // PlaceGameWindow: keep its position too
+    const UINT kFocusMessage = RegisterWindowMessageW(L"DDGUltrawide.FocusGameWindow");
+
+    // Brings the window to the foreground (on its own thread). Windows only
+    // lets a process take the foreground in some situations, so this briefly
+    // shares input with the thread that has it.
+    void TakeForeground(HWND hwnd)
+    {
+        HWND fg = GetForegroundWindow();
+        if (fg == hwnd) return;
+        const DWORD me = GetCurrentThreadId();
+        const DWORD them = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+        const bool attached = them && them != me && AttachThreadInput(me, them, TRUE);
+        ShowWindow(hwnd, SW_SHOW);
+        BringWindowToTop(hwnd);
+        SetForegroundWindow(hwnd);
+        SetActiveWindow(hwnd);
+        SetFocus(hwnd);
+        if (attached) AttachThreadInput(me, them, FALSE);
+        LOG(GetForegroundWindow() == hwnd ? "Game window brought to the foreground"
+                                          : "Could not bring the game window to the foreground");
+    }
 
     // Where the game window's client area goes (desktop pixels): with the
     // touch screens' part of the frame at the top left of the output that
@@ -49,6 +70,11 @@ namespace
             if (msg == WM_NCDESTROY && lk != g_locked.end()) g_locked.erase(lk);
         }
         if (!orig) return DefWindowProcW(hwnd, msg, wp, lp);
+        if (msg == kFocusMessage && kFocusMessage)
+        {
+            TakeForeground(hwnd);
+            return 0;
+        }
 
         // Keep its client area at the game's render size: the game renders at
         // its window's size, and window managers (such as PowerToys
@@ -120,8 +146,17 @@ void PlaceGameWindow(HWND game)
     RECT want = { 0, 0, g_cfg.renderW, g_cfg.renderH };
     AdjustWindowRectEx(&want, static_cast<DWORD>(GetWindowLongPtrW(game, GWL_STYLE)), FALSE,
                        static_cast<DWORD>(GetWindowLongPtrW(game, GWL_EXSTYLE)));
-    SetWindowPos(game, nullptr, o.x + want.left, o.y + want.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    // Asynchronously: this runs on our output windows' thread, and the game's
+    // thread (which owns its window) may be waiting on ours, presenting to our
+    // windows; waiting on it back would deadlock
+    SetWindowPos(game, nullptr, o.x + want.left, o.y + want.top, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_ASYNCWINDOWPOS );
     LOG("Game window placed with its client area at %ld,%ld (the touch screens on the desktop)", o.x, o.y);
+}
+
+void FocusGameWindow(HWND game)
+{
+    if (game && kFocusMessage) PostMessageW(game, kFocusMessage, 0, 0);
 }
 
 bool InstallGameWindowHook()

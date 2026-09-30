@@ -13,3 +13,7 @@ bool InstallGameWindowHook();
 // hanging off it wouldn't take touches below the desktop's edge. It's behind
 // our output window, so where it sits doesn't show.
 void PlaceGameWindow(HWND game);
+
+// Makes the game's window the foreground window (on its own thread, soon), so
+// keys go to the game: Alt+F4 otherwise closes whatever had the focus before.
+void FocusGameWindow(HWND game);

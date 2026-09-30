@@ -7,7 +7,7 @@
 
 #include <windows.h>
 #include <d3d11.h>
-#include <dxgi.h>
+#include <dxgi1_2.h>
 #include <d3dcompiler.h>
 #include <MinHook.h>
 #include <atomic>
@@ -267,6 +267,7 @@ float4 PSPanel(VSOut i) : SV_Target
         {
             HWND game = reinterpret_cast<HWND>(wp);
             TouchSetGameWindow(game);
+            if (hwnd == g_outs[kMainWindow].hwnd.load()) FocusGameWindow(game);
             if (g_cfg.gameWindowMode == 0)
             {
                 // Owned windows always stay above their owner in the z-order.
@@ -949,6 +950,30 @@ float4 PSPanel(VSOut i) : SV_Target
         return false;
     }
 
+    // Whether a swap chain is the game's own: it presents to the engine's
+    // top-level window. Other things in the process draw with Direct3D too
+    // (UE4SS's GUI, overlays) and must not be taken for the game's frame.
+    IDXGISwapChain* g_gameChain = nullptr;      // (last one seen to be the game's, and the last one not)
+    IDXGISwapChain* g_otherChain = nullptr;
+    bool IsGameChain(IDXGISwapChain* chain)
+    {
+        if (chain == g_gameChain) return true;
+        if (chain == g_otherChain) return false;
+        DXGI_SWAP_CHAIN_DESC scd;
+        wchar_t cls[64] = {};
+        const bool game = SUCCEEDED(chain->GetDesc(&scd)) && scd.OutputWindow
+                       && GetClassNameW(scd.OutputWindow, cls, 64) && wcscmp(cls, L"UnrealWindow") == 0
+                       && !(GetWindowLongPtrW(scd.OutputWindow, GWL_STYLE) & WS_CHILD);
+        if (game) g_gameChain = chain;
+        else
+        {
+            if (chain != g_otherChain)
+                LOG("Ignoring a swap chain that isn't the game's (window class \"%ls\")", cls);
+            g_otherChain = chain;
+        }
+        return game;
+    }
+
     void Composite(IDXGISwapChain* gameChain)
     {
         if (g_failed) return;
@@ -1050,7 +1075,7 @@ float4 PSPanel(VSOut i) : SV_Target
     HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain* chain, UINT sync, UINT flags)
     {
         // Our own Present comes through here too; only composite the game's frames.
-        if (!IsOurChain(chain) && !(flags & DXGI_PRESENT_TEST) && !g_failed)
+        if (!IsOurChain(chain) && !(flags & DXGI_PRESENT_TEST) && !g_failed && IsGameChain(chain))
         {
             if (!SafeComposite(chain))
             {
@@ -1061,46 +1086,67 @@ float4 PSPanel(VSOut i) : SV_Target
         return g_origPresent(chain, sync, flags);
     }
 
-    // Finds IDXGISwapChain::Present by creating a throwaway device and swap chain.
-    void* FindPresent()
+    // Present is found from the first swap chain created in the process (the
+    // game's, or UE4SS's, or ours: all the same function), by hooking the DXGI
+    // factory's CreateSwapChain and CreateSwapChainForHwnd. (Not by creating a
+    // throwaway device of our own: that loads the graphics driver alongside the
+    // game's and UE4SS's startup, and can deadlock with them.)
+    using CreateSwapChainFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+    using CreateSwapChainForHwndFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*,
+                                                                 const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
+    CreateSwapChainFn g_origCreateSwapChain = nullptr;
+    CreateSwapChainForHwndFn g_origCreateSwapChainForHwnd = nullptr;
+    std::atomic<bool> g_presentHooked{ false };
+
+    void HookPresentFrom(IDXGISwapChain* chain)
     {
-        WNDCLASSEXW wc = {};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = DefWindowProcW;
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.lpszClassName = L"DDGUltrawideDummy";
-        RegisterClassExW(&wc);
-        HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"", WS_OVERLAPPED, 0, 0, 64, 64,
-                                    nullptr, nullptr, wc.hInstance, nullptr);
-        if (!hwnd) return nullptr;
-
-        DXGI_SWAP_CHAIN_DESC sd = {};
-        sd.BufferCount = 1;
-        sd.BufferDesc.Width = 64;
-        sd.BufferDesc.Height = 64;
-        sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        sd.OutputWindow = hwnd;
-        sd.SampleDesc.Count = 1;
-        sd.Windowed = TRUE;
-        sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-        IDXGISwapChain* chain = nullptr;
-        ID3D11Device* dev = nullptr;
-        ID3D11DeviceContext* ctx = nullptr;
-        void* present = nullptr;
-        if (SUCCEEDED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
-                                                    D3D11_SDK_VERSION, &sd, &chain, &dev, nullptr, &ctx)))
+        if (!chain || g_presentHooked.exchange(true)) return;
+        void* present = (*reinterpret_cast<void***>(chain))[8];   // IDXGISwapChain::Present
+        if (MH_CreateHook(present, reinterpret_cast<void*>(&Hook_Present), reinterpret_cast<void**>(&g_origPresent)) != MH_OK
+            || MH_EnableHook(present) != MH_OK)
         {
-            void** vtable = *reinterpret_cast<void***>(chain);
-            present = vtable[8];   // IDXGISwapChain::Present
+            LOG("Could not hook Present; compositor disabled");
+            return;
         }
-        SafeRelease(chain);
-        SafeRelease(ctx);
-        SafeRelease(dev);
-        DestroyWindow(hwnd);
-        UnregisterClassW(wc.lpszClassName, wc.hInstance);
-        return present;
+        LOG("Compositor installed (Present at %p), %zu screens", present, g_cfg.ScreenCount());
+    }
+
+    HRESULT STDMETHODCALLTYPE Hook_CreateSwapChain(IDXGIFactory* f, IUnknown* dev, DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** out)
+    {
+        const HRESULT hr = g_origCreateSwapChain(f, dev, desc, out);
+        if (SUCCEEDED(hr) && out) HookPresentFrom(*out);
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForHwnd(IDXGIFactory2* f, IUnknown* dev, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1* desc,
+                                                          const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fs, IDXGIOutput* output, IDXGISwapChain1** out)
+    {
+        const HRESULT hr = g_origCreateSwapChainForHwnd(f, dev, hwnd, desc, fs, output, out);
+        if (SUCCEEDED(hr) && out) HookPresentFrom(*out);
+        return hr;
+    }
+
+    bool HookSwapChainCreation()
+    {
+        using CreateFactoryFn = HRESULT(WINAPI*)(REFIID, void**);
+        HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+        auto create = dxgi ? reinterpret_cast<CreateFactoryFn>(GetProcAddress(dxgi, "CreateDXGIFactory1")) : nullptr;
+        IDXGIFactory1* factory = nullptr;
+        if (!create || FAILED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) return false;
+        void** vt = *reinterpret_cast<void***>(factory);
+        bool ok = MH_CreateHook(vt[10], reinterpret_cast<void*>(&Hook_CreateSwapChain),
+                                reinterpret_cast<void**>(&g_origCreateSwapChain)) == MH_OK;
+        IDXGIFactory2* factory2 = nullptr;
+        if (ok && SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory2), reinterpret_cast<void**>(&factory2))))
+        {
+            void** vt2 = *reinterpret_cast<void***>(factory2);
+            if (vt2[15] != vt[10])
+                MH_CreateHook(vt2[15], reinterpret_cast<void*>(&Hook_CreateSwapChainForHwnd),
+                              reinterpret_cast<void**>(&g_origCreateSwapChainForHwnd));
+            factory2->Release();
+        }
+        factory->Release();
+        return ok && MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
     }
 }
 
@@ -1120,18 +1166,12 @@ bool InstallCompositor()
     HANDLE t = CreateThread(nullptr, 0, WindowThread, nullptr, 0, nullptr);
     if (t) CloseHandle(t);
 
-    void* present = FindPresent();
-    if (!present)
+    // Present gets hooked when the first swap chain is created
+    if (!HookSwapChainCreation())
     {
-        LOG("Could not locate IDXGISwapChain::Present; compositor disabled");
+        LOG("Could not hook swap chain creation; compositor disabled");
         return false;
     }
-    if (MH_CreateHook(present, reinterpret_cast<void*>(&Hook_Present), reinterpret_cast<void**>(&g_origPresent)) != MH_OK
-        || MH_EnableHook(present) != MH_OK)
-    {
-        LOG("Could not hook Present; compositor disabled");
-        return false;
-    }
-    LOG("Compositor installed (Present at %p), %zu screens", present, g_cfg.ScreenCount());
+    LOG("Startup: waiting for a swap chain, to hook Present");
     return true;
 }

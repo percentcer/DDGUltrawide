@@ -36,6 +36,7 @@ namespace
 
     DWORD WINAPI InitThread(LPVOID)
     {
+        LOG("Startup: installing the compositor");
         InstallCompositor();
         InstallTouchHooks();
         return 0;

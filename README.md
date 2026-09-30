@@ -84,4 +84,3 @@ Delete `version.dll`, `DDGUltrawide.ini` and `DDGUltrawide.log`.
 ## Known Incompatibilities
 
 - PowerToys FancyZones needs an exclusion for `TG4AC-Win64-Shipping.exe` (by default it will force the base canvas to resize which breaks the compositor. DDGUltrawide will try to detect and fix this but... no promises)
-- Currently does not work with `UE4SS` if the inspection windows are shown.
