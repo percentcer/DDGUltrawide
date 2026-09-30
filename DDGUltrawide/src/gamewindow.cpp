@@ -1,8 +1,10 @@
 #include "gamewindow.h"
+#include "config.h"
 #include "log.h"
 
 #include <windows.h>
 #include <MinHook.h>
+#include <cmath>
 #include <cwchar>
 #include <mutex>
 #include <unordered_map>
@@ -15,17 +17,67 @@ namespace
 
     std::mutex g_mutex;
     std::unordered_map<HWND, WNDPROC> g_origProcs;
+    std::unordered_map<HWND, bool> g_locked;    // top-level: its client area is kept at the game's render size
+    bool g_placed = false;                      // PlaceGameWindow: keep its position too
+
+    // Where the game window's client area goes (desktop pixels): with the
+    // touch screens' part of the frame at the top left of the output that
+    // shows them (the panel's own window, or the main one)
+    POINT ClientOrigin()
+    {
+        float x0 = 1, y0 = 1;
+        for (const Placement& p : Placements(kMainWindow, g_cfg.outW, g_cfg.outH))
+            for (int r : g_cfg.touchScreens)
+                if (p.screen == r) { x0 = std::fmin(x0, p.source.originX); y0 = std::fmin(y0, p.source.originY); }
+        if (x0 > 0.999f && y0 > 0.999f) { x0 = 0.5f; y0 = 0.5f; }   // (the touch panel's quadrant)
+        const bool own = g_cfg.panelWindow && g_cfg.panelW > 0 && g_cfg.panelH > 0;
+        const int dx = own ? g_cfg.panelX : g_cfg.outX, dy = own ? g_cfg.panelY : g_cfg.outY;
+        return { dx - static_cast<LONG>(x0 * g_cfg.renderW), dy - static_cast<LONG>(y0 * g_cfg.renderH) };
+    }
 
     LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
         WNDPROC orig = nullptr;
+        bool locked = false;
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             auto it = g_origProcs.find(hwnd);
             if (it != g_origProcs.end()) orig = it->second;
+            auto lk = g_locked.find(hwnd);
+            if (lk != g_locked.end()) locked = lk->second;
             if (msg == WM_NCDESTROY && it != g_origProcs.end()) g_origProcs.erase(it);
+            if (msg == WM_NCDESTROY && lk != g_locked.end()) g_locked.erase(lk);
         }
         if (!orig) return DefWindowProcW(hwnd, msg, wp, lp);
+
+        // Keep its client area at the game's render size: the game renders at
+        // its window's size, and window managers (such as PowerToys
+        // FancyZones) can resize it, which squashes or shifts the game's
+        // screens in its frame. The window's outer size follows from its
+        // current style (the game changes it). Moving and minimizing are left alone.
+        if (msg == WM_WINDOWPOSCHANGING && lp && locked && g_cfg.renderW > 0 && g_cfg.renderH > 0 && !IsIconic(hwnd))
+        {
+            auto* wpos = reinterpret_cast<WINDOWPOS*>(lp);
+            RECT want = { 0, 0, g_cfg.renderW, g_cfg.renderH };
+            AdjustWindowRectEx(&want, static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE)), FALSE,
+                               static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)));
+            const int cx = want.right - want.left, cy = want.bottom - want.top;
+            if (g_placed && !(wpos->flags & SWP_NOMOVE))
+            {
+                const POINT o = ClientOrigin();
+                wpos->x = o.x + want.left;
+                wpos->y = o.y + want.top;
+            }
+            if (!(wpos->flags & SWP_NOSIZE) && (wpos->cx != cx || wpos->cy != cy))
+            {
+                static int logged = 0;
+                if (logged++ < 5)
+                    LOG("Game window resize to %dx%d changed to %dx%d (a %dx%d client area)",
+                        wpos->cx, wpos->cy, cx, cy, g_cfg.renderW, g_cfg.renderH);
+                wpos->cx = cx;
+                wpos->cy = cy;
+            }
+        }
 
         const LRESULT r = CallWindowProcW(orig, hwnd, msg, wp, lp);
         if (msg == WM_GETMINMAXINFO && lp)
@@ -53,10 +105,23 @@ namespace
         if (prev)
         {
             g_origProcs[hwnd] = prev;
+            g_locked[hwnd] = !parent;
             LOG("Game window %p created (%dx%d); size limit lifted", hwnd, w, h);
         }
         return hwnd;
     }
+}
+
+void PlaceGameWindow(HWND game)
+{
+    if (!game || g_cfg.renderW <= 0 || g_cfg.renderH <= 0) return;
+    g_placed = true;
+    const POINT o = ClientOrigin();
+    RECT want = { 0, 0, g_cfg.renderW, g_cfg.renderH };
+    AdjustWindowRectEx(&want, static_cast<DWORD>(GetWindowLongPtrW(game, GWL_STYLE)), FALSE,
+                       static_cast<DWORD>(GetWindowLongPtrW(game, GWL_EXSTYLE)));
+    SetWindowPos(game, nullptr, o.x + want.left, o.y + want.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    LOG("Game window placed with its client area at %ld,%ld (the touch screens on the desktop)", o.x, o.y);
 }
 
 bool InstallGameWindowHook()

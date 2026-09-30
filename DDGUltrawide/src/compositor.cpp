@@ -1,6 +1,7 @@
 #include "compositor.h"
 #include "cabinetlight.h"
 #include "config.h"
+#include "gamewindow.h"
 #include "log.h"
 #include "touch.h"
 
@@ -272,6 +273,7 @@ float4 PSPanel(VSOut i) : SV_Target
                 SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(game));
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 LOG("%s window now owned by the game window %p", OutputName(hwnd), game);
+                if (hwnd == g_outs[kMainWindow].hwnd.load()) PlaceGameWindow(game);
             }
             else if (hwnd == g_outs[kMainWindow].hwnd.load())
             {
