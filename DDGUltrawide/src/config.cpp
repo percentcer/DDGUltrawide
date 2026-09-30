@@ -337,6 +337,7 @@ namespace
     //   - center acrylic, along the top: M4x10 on a 14 mm chrome washer (with the acrylic, later)
     //   - side acrylic and its stopper bar: M5x10, 10 mm heads
     constexpr float kSideSideDropsMm[1] = { 312.5f };
+    constexpr float kSideSeamsMm = 956.4f;      // the seams either side of the side screens' monitor panel, apart
 
     constexpr FrameSpec kSideFrame = { 0.0f, Mm(31.3f), Mm(21.0f), Mm(31.3f), false, true,
                                        4, 43.3f, 13.3f, 1, kSideSideDropsMm, 9.4f, 10.0f };
@@ -410,6 +411,19 @@ namespace
     constexpr float kGrilleRim = 0.10f;         // their rounded rims' width, likewise
     constexpr float kTouchOpeningMm[3] = { 481.0f, 183.0f, 40.0f };           // width, height, down from the top
     constexpr float kHoodAlbedo = 0.045f;       // black paint (sRGB)
+    constexpr float kPanelForwardMm = 10.0f;    // the touch panel stands this far in front of the hood's front
+
+    // The touch panel's frame ("CONTROL MONITOR PANEL", PMMA: glossy black
+    // acrylic, its edges rounded inside and out), from the inset of "CENTER
+    // VIDEO CABINET ASSY [11]" (page 122), scaled by its opening (the front
+    // view's 481 mm): borders of 61 mm at the sides, 32 mm at the top and 75 mm
+    // at the bottom, and 6 black M4 truss-head screws, 3 down each side, 8 mm
+    // in from its edge and 35, 171 and 307 mm down from its top
+    constexpr float kFrameOpeningMm = 481.0f;
+    constexpr float kFrameBorderMm[3] = { 61.0f, 32.0f, 75.0f };    // sides, top, bottom
+    constexpr float kFrameEdgeMm = 3.0f;        // its edges' rounding
+    constexpr float kFrameScrewInMm = 8.0f;
+    constexpr float kFrameScrewDownMm[3] = { 35.0f, 171.0f, 307.0f };
     constexpr float kCenterAcrylicSpacerIn = 5.5f / 25.4f;
 
     // Room each screen's frame takes around its picture, in inches
@@ -647,11 +661,110 @@ namespace
     constexpr float kPictureCenterMm = 1495.0f;
     constexpr float kFloorAlbedo = 0.08f;       // linear
 
+    // The booth's windows, from the manual's elevations (page 10, to scale: the
+    // back wall's middle window comes out centered, 975 to 1625 mm across its
+    // 2600): in the back wall, one either side of the middle and one in the
+    // door on the player's left (mm across from the middle, as the player sees
+    // it; up from the floor); and one in each side wall, 625 to 1465 mm back
+    // from the booth's front, which puts it 372 to 1212 mm behind the screens
+    // (the back wall's panel taken as 20 mm thick). Through them, the arcade:
+    // as bright as a white wall in its lighting (ArcadeCabinetRoomLux), and the
+    // way the room's light gets into the booth (with a little more over its
+    // walls and through its top).
+    constexpr float kOutside = 1.0f;            // the arcade through the windows, in room-light units
+    constexpr float kBackWindowsMm[3][4] = { { 708.0f, 979.0f, 1198.0f, 1753.0f },
+                                             { -325.0f, 979.0f, 325.0f, 1753.0f },
+                                             { -1215.0f, 1102.0f, -650.0f, 1692.0f } };
+    constexpr float kSideWindowMm[4] = { 372.0f, 1091.0f, 1212.0f, 1691.0f };   // behind the screens; up
+
     // Light cells per screen (across, down)
     constexpr int kCellsForward[2] = { 8, 4 };
     constexpr int kCellsPanel[2] = { 4, 2 };
 
     float ToLinear(float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); }
+}
+
+namespace
+{
+    // The touch panel in perspective (see PerspectivePanel), and its sheet:
+    // half width, top and bottom (y), in inches. False (sheet all 0) when it
+    // isn't drawn that way.
+    bool PanelSheet(int width, int height, float quad[4][2], float sheet[3])
+    {
+        sheet[0] = sheet[1] = sheet[2] = 0;
+        if (!PerspectiveOn() || width <= 0 || height <= 0) return false;
+        const float W = static_cast<float>(width), H = static_cast<float>(height);
+        Rect c = {}, panel = {};
+        bool hasCenter = false, hasPanel = false;
+        for (const Placement& p : Placements(kMainWindow, width, height))
+        {
+            if (p.screen == 1) { c = p.dest; hasCenter = true; }
+            if (p.screen == kTouchPanelScreen) { panel = p.dest; hasPanel = true; }
+        }
+        if (!hasCenter || !hasPanel) return false;
+
+        // Inches from the center picture's middle, as in the cabinet's scene
+        const float u = c.sizeX * W / kCenterWidthInches;
+        const float ox = (c.originX + c.sizeX / 2) * W, oy = (c.originY + c.sizeY / 2) * H;
+        const float Z = CameraIn();
+        const float picHalf = c.sizeY * H / 2 / u;
+        const float top = picHalf - 2 * picHalf * kHoodCoverFraction;             // the hood's top
+        const float D = Mm(kHoodDepthMm + kPanelForwardMm), slope = kHoodLeanMm / kHoodHeightMm;
+
+        // The sheet leans with the hood's front: z = D + slope (y - top). What
+        // height on it the camera sees at a (inches below the middle, on the wall)
+        auto onSheet = [&](float a) { return a * (Z - D + slope * top) / (Z + a * slope); };
+        const float y0 = onSheet((panel.originY * H - oy) / u);
+        const float y1 = onSheet(((panel.originY + panel.sizeY) * H - oy) / u);
+        const float k0 = Z / (Z - D - slope * (y0 - top)), k1 = Z / (Z - D - slope * (y1 - top));
+        const float hw = panel.sizeX * W / 2 / u / k0;                          // its top edge as wide as the placement's
+        const float mid = (panel.originX + panel.sizeX / 2) * W;
+        const float corners[4][2] = { { -hw, y0 }, { hw, y0 }, { hw, y1 }, { -hw, y1 } };
+        for (int i = 0; i < 4; ++i)
+        {
+            const float k = i < 2 ? k0 : k1;
+            quad[i][0] = mid + corners[i][0] * k * u;
+            quad[i][1] = oy + corners[i][1] * k * u;
+        }
+        (void)ox;
+        sheet[0] = hw;
+        sheet[1] = y0;
+        sheet[2] = y1;
+        return true;
+    }
+
+    // The projective map from the unit square (u, v) to a quad (corners: top
+    // left, top right, bottom right, bottom left), row major: (x, y, w) = M (u, v, 1)
+    void SquareToQuad(const float q[4][2], double m[9])
+    {
+        const double x0 = q[0][0], y0 = q[0][1], x1 = q[1][0], y1 = q[1][1];
+        const double x2 = q[2][0], y2 = q[2][1], x3 = q[3][0], y3 = q[3][1];
+        const double sx = x0 - x1 + x2 - x3, sy = y0 - y1 + y2 - y3;
+        double g = 0, h = 0;
+        if (std::fabs(sx) > 1e-9 || std::fabs(sy) > 1e-9)
+        {
+            const double dx1 = x1 - x2, dx2 = x3 - x2, dy1 = y1 - y2, dy2 = y3 - y2;
+            const double den = dx1 * dy2 - dx2 * dy1;
+            g = (sx * dy2 - dx2 * sy) / den;
+            h = (dx1 * sy - sx * dy1) / den;
+        }
+        const double r[9] = { x1 - x0 + g * x1, x3 - x0 + h * x3, x0,
+                              y1 - y0 + g * y1, y3 - y0 + h * y3, y0,
+                              g, h, 1 };
+        for (int i = 0; i < 9; ++i) m[i] = r[i];
+    }
+
+    void Inverse3(const double m[9], double r[9])
+    {
+        const double a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5], g = m[6], h = m[7], i = m[8];
+        const double A = e * i - f * h, B = f * g - d * i, C = d * h - e * g;
+        const double det = a * A + b * B + c * C;
+        const double k = std::fabs(det) > 1e-18 ? 1 / det : 0;
+        const double t[9] = { A, c * h - b * i, b * f - c * e,
+                              B, a * i - c * g, c * d - a * f,
+                              C, b * g - a * h, a * e - b * d };
+        for (int n = 0; n < 9; ++n) r[n] = t[n] * k;
+    }
 }
 
 bool GetCabinetScene(int width, int height, CabinetScene& scene)
@@ -726,6 +839,19 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
     auto spread = [](float a, float b, int n, int i) { return n <= 1 ? (a + b) / 2 : a + (b - a) * i / (n - 1); };
 
     box(0, 0, W, H, 0, wallPaint);   // wall
+
+    // Each side cabinet's face is three panels: a post either side and the
+    // monitor panel between, its seams running the full height of the wall
+    // (under the frame) just outside the monitor's cutout: 2 mm past the
+    // picture's sides (from photos; the drawings, "SIDE VIDEO CABINET
+    // ASSY-L/R [1]", pages 144-145, put them about 7 mm past)
+    const float seamOut = Mm(kSideSeamsMm - 952.4f) / 2 * u;       // past the picture's sides (it's 952.4 mm)
+    for (int s = 0; s < 3; s += 2)
+    {
+        if (!has[s]) continue;
+        vseam(pic[s][0] - seamOut, 0, H, 0);
+        vseam(pic[s][2] + seamOut, 0, H, 0);
+    }
 
     float frameLeft = W, frameRight = 0, frameTop = H;
     for (int s = 0; s < 3; ++s)
@@ -841,6 +967,16 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
     if (has[kTouchPanelScreen])
         for (int i = 0; i < 4; ++i) scene.panelRect[i] = pic[kTouchPanelScreen][i];
     scene.panelSurround = kPanelSurroundIn * u;
+    float quad[4][2];
+    if (PanelSheet(width, height, quad, scene.panelSheet))
+    {
+        const float k = 2 * scene.panelSheet[0] / Mm(kFrameOpeningMm);             // the frame scales with the panel
+        for (int i = 0; i < 3; ++i) scene.panelFrame[i] = Mm(kFrameBorderMm[i]) * k;
+        scene.panelFrame[3] = Mm(kFrameEdgeMm) * k;
+        scene.panelFrameScrews[0] = Mm(kFrameScrewInMm) * k;
+        for (int i = 0; i < 3; ++i) scene.panelFrameScrews[1 + i] = Mm(kFrameScrewDownMm[i]) * k;
+        scene.panelFrameScrews[4] = Mm(kHoodScrewMm) / 2 * k;
+    }
 
     // The cabinet in 3D, for the lighting (it's drawn flat): past the corner,
     // the flat layout continues along the side cabinets' faces, which turn
@@ -919,6 +1055,18 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
     scene.boothCeiling = ceilY;
     scene.boothFloor = floorY;
     scene.floorAlbedo = kFloorAlbedo;
+    auto up = [&](float mm) { return (kPictureCenterMm - mm) * mmIn; };      // a height, as y
+    for (int i = 0; i < 3; ++i)
+    {
+        scene.backWindows[i][0] = kBackWindowsMm[i][0] * mmIn;
+        scene.backWindows[i][1] = up(kBackWindowsMm[i][3]);
+        scene.backWindows[i][2] = kBackWindowsMm[i][2] * mmIn;
+        scene.backWindows[i][3] = up(kBackWindowsMm[i][1]);
+    }
+    scene.sideWindow[0] = kSideWindowMm[0] * mmIn;
+    scene.sideWindow[1] = up(kSideWindowMm[3]);
+    scene.sideWindow[2] = kSideWindowMm[2] * mmIn;
+    scene.sideWindow[3] = up(kSideWindowMm[1]);
     scene.acrylicIn = kAcrylicIn;
     // Who's looking: the perspective view's camera, or else the seated player
     // (about 1200 mm up and 800 mm back)
@@ -971,6 +1119,33 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
         face(ceilC, flatA, flatB, 6, 4, ceilN, wallLin);
         const float floorC[3] = { -halfW, floorY, 0 }, floorN[3] = { 0, -1, 0 };
         face(floorC, flatA, flatB, 6, 4, floorN, floorLin);
+
+        // The windows: the arcade outside, shining in (2 x 2 patches each)
+        const float none[3] = { 0, 0, 0 };
+        auto window = [&](const float c0[3], const float a[3], const float b[3], const float n[3])
+        {
+            const float la = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]), lb = std::sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
+            for (int j = 0; j < 2; ++j)
+                for (int i = 0; i < 2; ++i)
+                {
+                    float pos[3];
+                    for (int k = 0; k < 3; ++k) pos[k] = c0[k] + a[k] * (i + 0.5f) / 2 + b[k] * (j + 0.5f) / 2 + n[k] * 0.1f;
+                    addPatch(pos, n, la * lb / 4, none);
+                    scene.patches.back().emission = kOutside;
+                }
+        };
+        for (const auto& w : scene.backWindows)
+        {
+            const float c0[3] = { w[0], w[1], back }, a[3] = { w[2] - w[0], 0, 0 }, b[3] = { 0, w[3] - w[1], 0 };
+            window(c0, a, b, backN);
+        }
+        for (int side = -1; side <= 1; side += 2)
+        {
+            const float* w = scene.sideWindow;
+            const float c0[3] = { side * halfW, w[1], w[0] }, a[3] = { 0, 0, w[2] - w[0] }, b[3] = { 0, w[3] - w[1], 0 };
+            const float n[3] = { -static_cast<float>(side), 0, 0 };
+            window(c0, a, b, n);
+        }
 
         // The front: the center wall (4 x 5), and each side cabinet's face (3 x 4)
         const int fcx = 4, fcy = 5;
@@ -1028,4 +1203,38 @@ bool GetPerspective(int width, int height, PerspectiveView& v)
     v.marginPx = static_cast<int>(std::ceil(std::fmax(0.0f, (flatEdge - edge) * v.pxPerInch))) + 2;
     if (v.marginPx > widest) v.marginPx = widest;
     return true;
+}
+
+bool PerspectivePanel(int width, int height, float quad[4][2])
+{
+    float sheet[3];
+    return PanelSheet(width, height, quad, sheet);
+}
+
+void PanelToOutput(const float quad[4][2], float u, float v, float& x, float& y)
+{
+    double m[9];
+    SquareToQuad(quad, m);
+    const double w = m[6] * u + m[7] * v + m[8];
+    x = static_cast<float>((m[0] * u + m[1] * v + m[2]) / w);
+    y = static_cast<float>((m[3] * u + m[4] * v + m[5]) / w);
+}
+
+bool OutputToPanel(const float quad[4][2], float x, float y, float& u, float& v)
+{
+    float m[9];
+    OutputToPanelMatrix(quad, m);
+    const float w = m[6] * x + m[7] * y + m[8];
+    if (std::fabs(w) < 1e-12f) return false;
+    u = (m[0] * x + m[1] * y + m[2]) / w;
+    v = (m[3] * x + m[4] * y + m[5]) / w;
+    return true;
+}
+
+void OutputToPanelMatrix(const float quad[4][2], float m[9])
+{
+    double f[9], r[9];
+    SquareToQuad(quad, f);
+    Inverse3(f, r);
+    for (int i = 0; i < 9; ++i) m[i] = static_cast<float>(r[i]);
 }

@@ -47,6 +47,32 @@ namespace
     }
 
     // Output client point (in one of our windows) -> game client point.
+    // Where an output point (client pixels) is on a placement: 0 to 1 across
+    // and down. With perspective, the touch panel in the main window is tilted
+    // (a quad on screen, PerspectivePanel), not a rectangle.
+    void PlacementUV(int window, const Placement& p, int w, int h, float x, float y, float& u, float& v)
+    {
+        float quad[4][2];
+        if (window == kMainWindow && p.screen == kTouchPanelScreen && PerspectivePanel(w, h, quad)
+            && OutputToPanel(quad, x, y, u, v))
+            return;
+        u = (x / w - p.dest.originX) / p.dest.sizeX;
+        v = (y / h - p.dest.originY) / p.dest.sizeY;
+    }
+
+    // ...and back: where on the output (client pixels) a point on a placement is
+    void PlacementPoint(int window, const Placement& p, int w, int h, float u, float v, float& x, float& y)
+    {
+        float quad[4][2];
+        if (window == kMainWindow && p.screen == kTouchPanelScreen && PerspectivePanel(w, h, quad))
+        {
+            PanelToOutput(quad, u, v, x, y);
+            return;
+        }
+        x = (p.dest.originX + u * p.dest.sizeX) * w;
+        y = (p.dest.originY + v * p.dest.sizeY) * h;
+    }
+
     // forceRegion >= 0 clamps the point into that screen (used during a press).
     bool MapClientPoint(int window, int ox, int oy, int forceRegion, POINT& game, int& regionOut)
     {
@@ -58,9 +84,6 @@ namespace
         if (!GetClientRect(gw, &gc) || gc.right <= 0 || gc.bottom <= 0) return false;
         if (!GetClientRect(ow, &oc) || oc.right <= 0 || oc.bottom <= 0) return false;
 
-        const float fx = (ox + 0.5f) / oc.right;
-        const float fy = (oy + 0.5f) / oc.bottom;
-
         // Topmost (last drawn) first, where screens overlap
         const std::vector<Placement> placements = Placements(window, oc.right, oc.bottom);
         for (auto it = placements.rbegin(); it != placements.rend(); ++it)
@@ -68,9 +91,8 @@ namespace
             const Placement& p = *it;
             if (forceRegion >= 0 ? p.screen != forceRegion : !IsTouchRegion(p.screen)) continue;
 
-            const Rect& d = p.dest;
-            float u = (fx - d.originX) / d.sizeX;
-            float v = (fy - d.originY) / d.sizeY;
+            float u, v;
+            PlacementUV(window, p, oc.right, oc.bottom, ox + 0.5f, oy + 0.5f, u, v);
             if (forceRegion < 0 && (u < 0 || u >= 1 || v < 0 || v >= 1)) continue;
             u = u < 0 ? 0 : (u > 0.9999f ? 0.9999f : u);
             v = v < 0 ? 0 : (v > 0.9999f ? 0.9999f : v);
@@ -95,14 +117,12 @@ namespace
         if (!gw || !ow || !GetClientRect(gw, &gc) || !GetClientRect(ow, &oc)) return false;
         if (gc.right <= 0 || gc.bottom <= 0 || oc.right <= 0 || oc.bottom <= 0) return false;
 
-        const float fx = (ox + 0.5f) / oc.right;
-        const float fy = (oy + 0.5f) / oc.bottom;
         const std::vector<Placement> placements = Placements(window, oc.right, oc.bottom);
         for (auto it = placements.rbegin(); it != placements.rend(); ++it)   // topmost first
         {
             const Placement& p = *it;
-            const float u = (fx - p.dest.originX) / p.dest.sizeX;
-            const float v = (fy - p.dest.originY) / p.dest.sizeY;
+            float u, v;
+            PlacementUV(window, p, oc.right, oc.bottom, ox + 0.5f, oy + 0.5f, u, v);
             if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
             game.x = static_cast<LONG>((p.source.originX + u * p.source.sizeX) * gc.right);
             game.y = static_cast<LONG>((p.source.originY + v * p.source.sizeY) * gc.bottom);
@@ -205,9 +225,9 @@ namespace
                 const float v = (fy - s.originY) / s.sizeY;
                 if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
 
-                const Rect& d = p.dest;
-                POINT o = { static_cast<LONG>((d.originX + u * d.sizeX) * oc.right),
-                            static_cast<LONG>((d.originY + v * d.sizeY) * oc.bottom) };
+                float x, y;
+                PlacementPoint(w, p, oc.right, oc.bottom, u, v, x, y);
+                POINT o = { static_cast<LONG>(x), static_cast<LONG>(y) };
                 if (!ClientToScreen(ow, &o)) return -1;
                 out = o;
                 return 1;

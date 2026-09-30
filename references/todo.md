@@ -1,4 +1,6 @@
 ## software
+- tilt touch screen to match angle of grilles
+- add glass reflections to touch panel
 - draw that vertical seams visible where side panels meet center panel
 - consider drawing the fasteners along the top panel
 - consider drawing the seam along the top panel

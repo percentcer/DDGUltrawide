@@ -119,6 +119,7 @@ struct CabinetEmitter
     float uv[2];                // screen cell: where it is in the game's frame
     float lod;                  // screen cell: mip level covering it with about one texel
     float albedo[3];            // wall patch: its (linear) color
+    float emission;             // wall patch: light it gives off itself (a window: the arcade outside), in room-light units
 };
 
 // Everything the cabinet's lighting needs for a width x height main window.
@@ -143,6 +144,9 @@ struct CabinetScene
     // The booth, in inches from the center picture's middle (y down, z toward the player)
     float boothHalfWidth, boothBack, boothCeiling, boothFloor;
     float floorAlbedo;                      // linear
+    // The booth's windows (inches, as the booth): 3 in its back wall (x from,
+    // y from, x to, y to) and 1 in each side wall (z from, y from, z to, y to)
+    float backWindows[3][4], sideWindow[4];
     float eye[3];                           // who's looking, for reflections
     float acrylicIn;                        // the acrylic sheets' thickness
     // The hood under the center screen (drawn over everything, in 3D; it spans
@@ -162,8 +166,16 @@ struct CabinetScene
     float hoodFlange[3];
     std::vector<std::array<float, 3>> hoodScrews;
     // The touch panel, if it's in this window (output pixels; else all 0), and
-    // the black surround it sits in (pixels)
+    // the black surround it sits in (pixels). With perspective, it's a sheet
+    // leaning with the hood's front, a little in front of it (PerspectivePanel):
+    // its half width and top and bottom (y), in inches (else all 0).
     float panelRect[4], panelSurround;
+    float panelSheet[3];
+    // ...and its frame, on the same sheet (inches along it, scaled with the
+    // panel): its border at the sides, top and bottom, its edges' rounding;
+    // its screws' inset from its sides, how far down from its top (3), and
+    // their head radius
+    float panelFrame[4], panelFrameScrews[5];
 };
 
 // The cabinet (wall, screen frames, brackets, fasteners, console) and its
@@ -189,3 +201,18 @@ struct PerspectiveView
 
 // False when there's no perspective (it's off, or not the arcade layout's cabinet).
 bool GetPerspective(int width, int height, PerspectiveView& view);
+
+// With perspective, the touch panel (in the main window) leans back with the
+// hood's front, as the speakers do, a little in front of it: seen from the
+// camera, a quad, not a rectangle. Its corners in output pixels (top left, top
+// right, bottom right, bottom left): its top edge where its placement's is,
+// its bottom edge (a little wider) at its placement's bottom. False when it
+// isn't drawn that way (no perspective, or no panel in the window).
+bool PerspectivePanel(int width, int height, float quad[4][2]);
+
+// Between the quad's own square (u, v: 0 to 1 across and down) and output
+// pixels, perspective-correct
+void PanelToOutput(const float quad[4][2], float u, float v, float& x, float& y);
+bool OutputToPanel(const float quad[4][2], float x, float y, float& u, float& v);
+// ...and as a matrix (row major), output pixels to (u, v, w) with (u, v) = (u, v) / w
+void OutputToPanelMatrix(const float quad[4][2], float m[9]);

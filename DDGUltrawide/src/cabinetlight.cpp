@@ -46,7 +46,7 @@ namespace
     }
 
     constexpr int kMaxCells = 128;
-    constexpr int kMaxPatches = 160;
+    constexpr int kMaxPatches = 176;
     constexpr int kMaxHoodScrews = 16;
     constexpr int kCubeScale = 8;           // ambient cube resolution: 1 texel per 8x8 pixels
     // Light levels are physical, in units of the screens' white: a screen emits
@@ -56,7 +56,12 @@ namespace
 
     const char* kShader = R"(
 #define MAX_CELLS 128
-#define MAX_PATCHES 160
+#define MAX_PATCHES 176
+// The arcade's own lighting reaches into the booth mostly through its windows
+// (they're light sources among the booth's patches); this much of it gets in
+// everywhere else (over the walls, through the top)
+static const float ROOM_LEAK = 0.3;
+static const float OUTSIDE = 1.0;         // the arcade through the windows (as kOutside)
 #define MAX_HOOD_SCREWS 16
 static const float PI = 3.14159265;
 
@@ -76,7 +81,7 @@ cbuffer Scene : register(b1)
     float4 cellUV[MAX_CELLS];       // uv in the game's frame, mip level
     float4 patchPos[MAX_PATCHES];   // xyz, area
     float4 patchNrm[MAX_PATCHES];   // xyz
-    float4 patchAlb[MAX_PATCHES];   // linear rgb
+    float4 patchAlb[MAX_PATCHES];   // linear rgb, emission (room-light units)
     float4 counts;                  // cells, patches, cube scale
     float4 view;                    // width, height, pixels per inch
     float4 origin;                  // origin x, y (px)
@@ -93,6 +98,12 @@ cbuffer Scene : register(b1)
     float4 hoodOpening;             // the touch monitor's opening: half width, down its front (from, to); corners' radius
     float4 panelRect;               // the touch panel in the canvas (px; 0 when it isn't there)
     float4 panelSurround;           // its surround (px)
+    float4 panelSheet;              // with perspective: the panel's sheet, leaning with the hood's front: half width, top, bottom (inches), how far in front
+    float4 panelFrame;              // ...its frame (along the sheet): border at the sides, top, bottom; edges' rounding
+    float4 panelFrameScrews;        // ...its screws: in from its sides, down from its top (3)
+    float4 panelFrameScrew;         // ...their head radius
+    float4 backWindows[3];          // the booth's windows: in its back wall (x from, y from, x to, y to)
+    float4 sideWindow;              // ...and in each side wall (z from, y from, z to, y to)
     float4 hoodFlange;              // the center plate's flanges: start (x, either side), width, thickness; the screws' count
     float4 hoodScrews[MAX_HOOD_SCREWS];   // the screws on the hood's top: x, z, head radius
 };
@@ -293,7 +304,7 @@ float3 PatchDirect(int i)
 float4 PSPatches(float4 pos : SV_Position) : SV_Target
 {
     int i = (int)pos.x;
-    return float4(patchAlb[i].rgb * PatchDirect(i) / PI, 1);
+    return float4(patchAlb[i].rgb * PatchDirect(i) / PI + patchAlb[i].w * light.y, 1);
 }
 
 float4 PSBounce(float4 pos : SV_Position) : SV_Target
@@ -308,7 +319,7 @@ float4 PSBounce(float4 pos : SV_Position) : SV_Target
         float3 e = FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w);
         E += e * saturate(dot(N, w));
     }
-    return float4(patchAlb[i].rgb * E / PI, 1);
+    return float4(patchAlb[i].rgb * E / PI + patchAlb[i].w * light.y, 1);
 }
 
 // ---- 3. Ambient cube: light from cells (t0) and patches (t1), by direction ----
@@ -345,7 +356,7 @@ Cube PSCube(float4 pos : SV_Position)
         c4 += e * max(w.z, 0); c5 += e * max(-w.z, 0);
     }
     // The arcade's own lighting: mostly from above and in front
-    float room = light.y * PI;
+    float room = light.y * PI * ROOM_LEAK;
     c3 += room * 0.6; c4 += room * 0.85;
     c0 += room * 0.25; c1 += room * 0.25; c2 += room * 0.15;
     Cube o;
@@ -390,7 +401,7 @@ Gloss PSGloss(float4 pos : SV_Position)
     // lighting on matte surfaces, but a reflection is only as bright as what it
     // reflects: take the gain back out, so a reflected screen is no brighter
     // than the screen itself
-    float k = (GLOSS_POWER + 1) / (2 * PI) / max(light.x, 1e-3), room = light.y;
+    float k = (GLOSS_POWER + 1) / (2 * PI) / max(light.x, 1e-3), room = light.y * ROOM_LEAK;
     Gloss o;
     o.px = float4(g0 * k + room * 0.25, 1); o.nx = float4(g1 * k + room * 0.25, 1);
     o.py = float4(g2 * k + room * 0.15, 1); o.ny = float4(g3 * k + room * 0.9, 1);
@@ -535,7 +546,7 @@ float4 PSBoothMap(float4 pos : SV_Position) : SV_Target
         E += FromSource(P, cellPos[c].xyz, cellNrm[c].xyz, cellPos[c].w, t0.Load(int3(c, 0, 0)).rgb, w) * saturate(dot(N, w));
     for (int j = 0; j < (int)counts.y; ++j)
         E += FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w) * saturate(dot(N, w));
-    return float4(albedo * (E / PI + light.y), 1);
+    return float4(albedo * (E / PI + light.y * ROOM_LEAK), 1);
 }
 
 // ---- 7. Acrylic: what's under it (t0, the target as drawn), the booth map (t1),
@@ -592,6 +603,17 @@ float3 SeenFar(float3 P, float3 r, float spread, out float t)
     if (front) return Under(origin.xy + flat * view.z, log2(max(t * spread * view.z, 1)));
 
     float3 X = P + r * t;
+
+    // The booth's windows: the arcade outside, as its own lighting lights it
+    // (mid grey)
+    bool window = false;
+    if (face == 0)
+        for (int w = 0; w < 3; ++w)
+            window = window || all(X.xy >= backWindows[w].xy) && all(X.xy <= backWindows[w].zw);
+    else if (face <= 2)
+        window = all(X.zy >= sideWindow.xy) && all(X.zy <= sideWindow.zw);
+    if (window) return OUTSIDE * light.y;
+
     float2 uv = face == 0 ? float2((X.x + hw) / (2 * hw), (X.y - cy) / (fy - cy))
               : face <= 2 ? float2((X.z - fz) / (bk - fz), (X.y - cy) / (fy - cy))
               : float2((X.x + hw) / (2 * hw), X.z / bk);
@@ -882,9 +904,55 @@ float4 PSChrome(float4 pos : SV_Position) : SV_Target
     return float4(LinearToSrgb(saturate(L)), metal);
 }
 
+)"
+R"(
 // ---- 8. The hood: each pixel's view (from the camera, or straight on) traced
 // to it; the cabinet as drawn (t0) is what it reflects. Where it misses, and
 // where the touch panel is (it sits in the hood's opening), nothing's drawn. ----
+// The touch panel's frame, at Q on its sheet (leaning with the hood's front;
+// q: across from the middle and down from the panel's top, inches along it),
+// seen along r: glossy black acrylic, its edges rounded over inside and out
+// (the reflection blurring over them, as on the hood's bends), with black
+// screws. outer: how far inside its outside edge; inner: how far outside the
+// panel's opening.
+float3 FrameShade(float3 Q, float2 q, float3 r, float outer, float inner, float panelH)
+{
+    float3 across = float3(sign(q.x), 0, 0), down = normalize(float3(0, 1, hood.w));
+    float3 nS = normalize(float3(0, -hood.w, 1));
+    float R = panelFrame.w;
+
+    // Toward the nearest outside edge, and away from the nearest opening edge
+    float hw = panelSheet.x;
+    float3 outward = hw + panelFrame.x - abs(q.x) <= min(q.y + panelFrame.y, panelH + panelFrame.z - q.y) ? across
+                   : q.y + panelFrame.y < panelH + panelFrame.z - q.y ? -down : down;
+    float3 inward = abs(q.x) - hw >= max(-q.y, q.y - panelH) ? -across : -q.y > q.y - panelH ? down : -down;
+    float bendOut = saturate(1 - outer / R), bendIn = saturate(1 - inner / R);
+    float3 n = normalize(nS + outward * 1.5 * bendOut + inward * 1.5 * bendIn);
+    float bend = max(bendOut, bendIn);
+
+    // The screws: 3 down each side
+    bool screw = false;
+    float side = hw + panelFrame.x - panelFrameScrews.x;
+    for (int i = 0; i < 3; ++i)
+    {
+        float2 d = (float2(abs(q.x), q.y + panelFrame.y) - float2(side, panelFrameScrews[1 + i])) / panelFrameScrew.x;
+        float l = length(d);
+        if (l >= 1) continue;
+        float h, dh;
+        ButtonHead(l, h, dh);
+        float2 dir = l > 1e-4 ? d / l : 0;
+        n = normalize(nS + (across * dir.x + down * dir.y) * -dh * 0.3);
+        screw = true;
+        bend = l;
+    }
+
+    float c = saturate(dot(-r, n));
+    float F = screw ? 0.12 + 0.88 * pow(1 - c, 5) : Fresnel(max(c, 1e-3), 1.49);
+    float t;
+    float3 diffuse = BoothMap(HOOD_FRONT, float2((Q.x + hood.x) / (2 * hood.x), (Q.y - hood.y) / hood2.x)) * 0.4;
+    return diffuse + F * SeenFar(Q + n * 0.02, r + 2 * c * n, 0.01 + 0.5 * bend, t);
+}
+
 float4 PSHood(float4 pos : SV_Position) : SV_Target
 {
     float2 cpx = float2(pos.x + sTarget.z, pos.y);      // in the canvas
@@ -896,13 +964,31 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     float t = HoodHit(P, r, N);
     if (t > 1e8) discard;
 
-    float3 c;
-    if (panelRect.z > panelRect.x && all(cpx >= panelRect.xy - panelSurround.x) && all(cpx <= panelRect.zw + panelSurround.x))
+    // The touch panel sits in the hood's opening (it's drawn there, not by us),
+    // in a black surround (duller). With perspective, it's a sheet leaning with
+    // the hood's front, a little in front of it, drawn over the hood afterward
+    // (blending its edges), in its glossy frame; under it, dark (its edges
+    // blend with that)
+    float3 X = P + r * t;
+    float3 c = HoodShade(X, N, r);
+    if (perspective && panelSheet.x > 0)
+    {
+        float s = hood.w, D = hood.z + panelSheet.w, k = sqrt(1 + s * s);
+        float u = (D - s * hood.y - P.z + s * P.y) / (r.z - s * r.y);
+        float3 Q = P + r * u;
+        float2 q = float2(Q.x, (Q.y - panelSheet.y) * k);                // on the sheet: across, down from the panel's top
+        float panelH = (panelSheet.z - panelSheet.y) * k, hw = panelSheet.x;
+        float outer = min(hw + panelFrame.x - abs(q.x), min(q.y + panelFrame.y, panelH + panelFrame.z - q.y));
+        float inner = max(abs(q.x) - hw, max(-q.y, q.y - panelH));
+        float px = (eye.z - Q.z) / eye.z / view.z;       // a pixel, in inches, at Q
+        float cover = u > 0 && u <= t + 1 ? saturate(outer / px + 0.5) : 0;   // (its outside edge blends)
+        if (cover > 0) c = lerp(c, inner <= 0 ? 0.1 * c : FrameShade(Q, q, r, outer, inner, panelH), cover);
+    }
+    else if (panelRect.z > panelRect.x && all(cpx >= panelRect.xy - panelSurround.x) && all(cpx <= panelRect.zw + panelSurround.x))
     {
         if (all(cpx >= panelRect.xy) && all(cpx <= panelRect.zw)) discard;
-        c = 0.1 * HoodShade(P + r * t, N, r);           // its black surround: duller
+        c *= 0.1;
     }
-    else c = HoodShade(P + r * t, N, r);
     c *= light.z;
     c = c < 0.8 ? c : 0.8 + 0.2 * (1 - exp(-(c - 0.8) / 0.2));
     return float4(LinearToSrgb(saturate(c)), 1);
@@ -919,7 +1005,8 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         float cellPos[kMaxCells][4], cellNrm[kMaxCells][4], cellUV[kMaxCells][4];
         float patchPos[kMaxPatches][4], patchNrm[kMaxPatches][4], patchAlb[kMaxPatches][4];
         float counts[4], view[4], origin[4], light[4], wall[4], geom[4], booth[4], booth2[4], eye[4];
-        float hood[4], hood2[4], hoodGrille[4], grilleCells[4], hoodOpening[4], panelRect[4], panelSurround[4];
+        float hood[4], hood2[4], hoodGrille[4], grilleCells[4], hoodOpening[4], panelRect[4], panelSurround[4], panelSheet[4];
+        float panelFrame[4], panelFrameScrews[4], panelFrameScrew[4], backWindows[3][4], sideWindow[4];
         float hoodFlange[4], hoodScrews[kMaxHoodScrews][4];
     };
 
@@ -1112,7 +1199,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
             const CabinetEmitter& c = scene.patches[i];
             float* p = sc->patchPos[i]; p[0] = c.pos[0]; p[1] = c.pos[1]; p[2] = c.pos[2]; p[3] = c.area;
             float* n = sc->patchNrm[i]; n[0] = c.normal[0]; n[1] = c.normal[1]; n[2] = c.normal[2];
-            float* a = sc->patchAlb[i]; a[0] = c.albedo[0]; a[1] = c.albedo[1]; a[2] = c.albedo[2];
+            float* a = sc->patchAlb[i]; a[0] = c.albedo[0]; a[1] = c.albedo[1]; a[2] = c.albedo[2]; a[3] = c.emission;
         }
         sc->counts[0] = static_cast<float>(g_cellCount);
         sc->counts[1] = static_cast<float>(g_patchCount);
@@ -1157,6 +1244,13 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
             sc->panelRect[2] = scene.panelRect[2] + offset; sc->panelRect[3] = scene.panelRect[3];
         }
         sc->panelSurround[0] = scene.panelSurround;
+        for (int i = 0; i < 3; ++i) sc->panelSheet[i] = scene.panelSheet[i];
+        sc->panelSheet[3] = 10.0f / 25.4f;                  // (as kPanelForwardMm)
+        for (int i = 0; i < 4; ++i) sc->panelFrame[i] = scene.panelFrame[i];
+        for (int i = 0; i < 4; ++i) sc->panelFrameScrews[i] = scene.panelFrameScrews[i];
+        sc->panelFrameScrew[0] = scene.panelFrameScrews[4];
+        memcpy(sc->backWindows, scene.backWindows, sizeof(sc->backWindows));
+        memcpy(sc->sideWindow, scene.sideWindow, sizeof(sc->sideWindow));
         for (int i = 0; i < 3; ++i) sc->hoodFlange[i] = scene.hoodFlange[i];
         const int screws = static_cast<int>(scene.hoodScrews.size() < kMaxHoodScrews ? scene.hoodScrews.size() : kMaxHoodScrews);
         sc->hoodFlange[3] = static_cast<float>(screws);

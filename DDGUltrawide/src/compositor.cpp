@@ -64,6 +64,7 @@ namespace
     ID3D11Buffer* g_cb = nullptr;
     ID3D11SamplerState* g_samp = nullptr;
     ID3D11BlendState* g_blend = nullptr;
+    ID3D11BlendState* g_blendCover = nullptr;   // by the pixel's coverage (alpha): the tilted touch panel's edges
     ID3D11RasterizerState* g_rs = nullptr;
     ID3D11DepthStencilState* g_dss = nullptr;
     bool g_failed = false;
@@ -72,6 +73,7 @@ namespace
     // Perspective (ArcadeCameraDistance): the main window is drawn flat onto this
     // canvas (wider than the window by a margin each side), then warped into it
     ID3D11PixelShader* g_psWarp = nullptr;
+    ID3D11PixelShader* g_psPanel = nullptr;     // the tilted touch panel (with the warp)
     ID3D11Buffer* g_warpCB = nullptr;
     ID3D11Texture2D* g_canvasTex = nullptr;
     ID3D11RenderTargetView* g_canvasRTV = nullptr;
@@ -131,6 +133,7 @@ namespace
         float pic[2][4];   // the side screens' pictures in the canvas (px: left, top, right, bottom)
         float src[2][4];   // ...and in the game's frame (uv)
         float texel[4];    // a texel of the game's frame (uv)
+        float panel[3][4]; // the tilted touch panel: output pixels to its square (rows of a 3x3)
     };
 
     // Per-draw constants: where to draw (fractions of the output) and what to sample
@@ -187,6 +190,7 @@ cbuffer Warp : register(b1)
     float4 wPic[2];  // the side screens' pictures in the canvas (px)
     float4 wSrc[2];  // ...and in the game's frame (uv)
     float4 wTexel;   // a texel of the game's frame (uv)
+    float4 wPanel[3];
 };
 Texture2D frame : register(t1);
 Texture2D reflections : register(t2);
@@ -216,6 +220,22 @@ float4 PSWarp(VSOut i) : SV_Target
     }
     if (px.x < 0 || px.x > wOut.z) c = 0;              // past the canvas: left dark
     return float4(c, 1);
+}
+
+// With perspective, the touch panel: tilted back with the hood's front, a quad
+// on screen. Each pixel's place on it (u, v) from the projective map (wPanel),
+// then the panel's picture (srcRect) there, blended in by how much of the
+// pixel it covers (so its slanted edges don't stair-step).
+float4 PSPanel(VSOut i) : SV_Target
+{
+    float3 p = float3(i.pos.xy, 1);
+    float3 q = float3(dot(wPanel[0].xyz, p), dot(wPanel[1].xyz, p), dot(wPanel[2].xyz, p));
+    float2 uv = q.xy / q.z;
+    float2 edge = min(uv, 1 - uv) / max(fwidth(uv), 1e-6);        // to the nearest edges, in pixels
+    float cover = saturate(min(edge.x, edge.y) + 0.5);
+    float3 c = tex.Sample(smp, clamp(lerp(srcRect.xy, srcRect.zw, saturate(uv)), clampRect.xy, clampRect.zw)).rgb;
+    clip(cover - 1e-3);
+    return float4(c, cover);
 }
 )";
 
@@ -430,6 +450,17 @@ float4 PSWarp(VSOut i) : SV_Target
                 SafeRelease(g_warpCB);
             }
             SafeRelease(psBlob);
+            if (SUCCEEDED(D3DCompile(kShader, len, "compositor", nullptr, nullptr, "PSPanel", "ps_4_0", 0, 0, &psBlob, &err)))
+            {
+                if (FAILED(g_dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_psPanel)))
+                    SafeRelease(g_psPanel);
+                SafeRelease(psBlob);
+            }
+            else
+            {
+                LOG("Tilted touch panel unavailable: %s", err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
+                SafeRelease(err);
+            }
         }
         else
         {
@@ -466,6 +497,15 @@ float4 PSWarp(VSOut i) : SV_Target
           && SUCCEEDED(g_dev->CreateRasterizerState(&rd, &g_rs))
           && SUCCEEDED(g_dev->CreateDepthStencilState(&dd, &g_dss));
         if (!ok) { LOG("Pipeline state creation failed"); return false; }
+        D3D11_BLEND_DESC bc = bd;
+        bc.RenderTarget[0].BlendEnable = TRUE;
+        bc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+        bc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        bc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        bc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        bc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
+        bc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        if (FAILED(g_dev->CreateBlendState(&bc, &g_blendCover))) g_blendCover = nullptr;
 
         CabinetLightInit(g_dev);   // optional: without it the screens are drawn on black
         return true;
@@ -815,6 +855,57 @@ float4 PSWarp(VSOut i) : SV_Target
             g_ctx->PSSetShaderResources(0, 3, noSRVs);
             // The hood, seen from the camera, over the warped view
             if (acrylic) CabinetLightHood(g_ctx, o.rtv, o.w, o.h, offset, true);
+
+            // The touch panel, tilted with the hood's front, over it
+            float quad[4][2];
+            if (acrylic && g_psPanel && PerspectivePanel(o.w, o.h, quad))
+                for (const Placement& p : placements)
+                {
+                    if (p.screen != kTouchPanelScreen) continue;
+                    float x0 = quad[0][0], x1 = quad[0][0], y0 = quad[0][1], y1 = quad[0][1];
+                    for (const auto& c : quad)
+                    {
+                        x0 = std::fmin(x0, c[0]); x1 = std::fmax(x1, c[0]);
+                        y0 = std::fmin(y0, c[1]); y1 = std::fmax(y1, c[1]);
+                    }
+                    DrawConstants dc;
+                    dc.dst[0] = (x0 - 1) / o.w; dc.dst[1] = (y0 - 1) / o.h;
+                    dc.dst[2] = (x1 + 1) / o.w; dc.dst[3] = (y1 + 1) / o.h;
+                    dc.src[0] = p.source.originX; dc.src[1] = p.source.originY;
+                    dc.src[2] = p.source.originX + p.source.sizeX; dc.src[3] = p.source.originY + p.source.sizeY;
+                    dc.clamp[0] = dc.src[0] + tu; dc.clamp[1] = dc.src[1] + tv;
+                    dc.clamp[2] = dc.src[2] - tu; dc.clamp[3] = dc.src[3] - tv;
+                    float mat[9];
+                    OutputToPanelMatrix(quad, mat);
+                    for (int r = 0; r < 3; ++r)
+                        for (int k = 0; k < 3; ++k) w.panel[r][k] = mat[r * 3 + k];
+                    if (SUCCEEDED(g_ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+                    {
+                        memcpy(m.pData, &dc, sizeof(dc));
+                        g_ctx->Unmap(g_cb, 0);
+                    }
+                    if (SUCCEEDED(g_ctx->Map(g_warpCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+                    {
+                        memcpy(m.pData, &w, sizeof(w));
+                        g_ctx->Unmap(g_warpCB, 0);
+                    }
+                    g_ctx->OMSetRenderTargets(1, &o.rtv, nullptr);
+                    g_ctx->RSSetViewports(1, &wv);
+                    g_ctx->RSSetState(g_rs);
+                    g_ctx->OMSetBlendState(g_blendCover ? g_blendCover : g_blend, nullptr, 0xFFFFFFFF);
+                    g_ctx->OMSetDepthStencilState(g_dss, 0);
+                    g_ctx->IASetInputLayout(nullptr);
+                    g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                    g_ctx->VSSetShader(g_vs, nullptr, 0);
+                    g_ctx->PSSetShader(g_psPanel, nullptr, 0);
+                    g_ctx->VSSetConstantBuffers(0, 1, &g_cb);
+                    g_ctx->PSSetConstantBuffers(0, 1, &g_cb);
+                    g_ctx->PSSetConstantBuffers(1, 1, &g_warpCB);
+                    g_ctx->PSSetSamplers(0, 1, &g_samp);
+                    g_ctx->PSSetShaderResources(0, 1, &g_srcSRV);
+                    g_ctx->Draw(4, 0);
+                    g_ctx->PSSetShaderResources(0, 1, &nullSRV);
+                }
         }
     }
 
