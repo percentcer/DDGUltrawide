@@ -8,7 +8,6 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
-#include <d3dcompiler.h>
 #include <MinHook.h>
 #include <atomic>
 #include <cmath>
@@ -16,9 +15,14 @@
 #include <cwchar>
 #include <vector>
 
+// The shaders (shaders\compositor.hlsl), compiled with the DLL (shaders\compile.cmd)
+#include "compositor_VSMain.h"
+#include "compositor_PSMain.h"
+#include "compositor_PSWarp.h"
+#include "compositor_PSPanel.h"
+
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "d3dcompiler.lib")
 
 namespace
 {
@@ -147,98 +151,6 @@ namespace
         float clamp[4];  // u0, v0, u1, v1
     };
 
-    const char* kShader = R"(
-cbuffer CB : register(b0)
-{
-    float4 dstRect;
-    float4 srcRect;
-    float4 clampRect;
-};
-struct VSOut
-{
-    float4 pos : SV_Position;
-    float2 uv  : TEXCOORD0;
-};
-VSOut VSMain(uint id : SV_VertexID)
-{
-    float2 t = float2(id & 1, id >> 1);
-    float2 p = lerp(dstRect.xy, dstRect.zw, t);
-    VSOut o;
-    o.pos = float4(p.x * 2 - 1, 1 - p.y * 2, 0, 1);
-    o.uv = lerp(srcRect.xy, srcRect.zw, t);
-    return o;
-}
-Texture2D tex : register(t0);
-SamplerState smp : register(s0);
-float4 PSMain(VSOut i) : SV_Target
-{
-    float2 uv = clamp(i.uv, clampRect.xy, clampRect.zw);
-    return float4(tex.Sample(smp, uv).rgb, 1);
-}
-
-// Perspective warp: each window pixel shows the flat canvas (t0) where its
-// camera ray lands. Within the corners (the center wall, seen straight on) that's
-// the same point; past them, the ray meets a side cabinet's face, turned toward
-// the camera, at a point that sits further out on the flat drawing. There, the
-// side screens' pictures are drawn again, straight from the game's frame (t1)
-// at its full resolution rather than the canvas's smaller copy, with the
-// acrylic's reflections (t2) over them.
-cbuffer Warp : register(b1)
-{
-    float4 wOut;     // window width, height; canvas width; canvas offset
-    float4 wGeo;     // center picture's middle (window px); pixels per inch; corner (inches)
-    float4 wCam;     // sin, cos of the faces' turn; camera distance (inches)
-    float4 wPic[2];  // the side screens' pictures in the canvas (px)
-    float4 wSrc[2];  // ...and in the game's frame (uv)
-    float4 wTexel;   // a texel of the game's frame (uv)
-    float4 wPanel[3];
-};
-Texture2D frame : register(t1);
-Texture2D reflections : register(t2);
-float3 SrgbToLinear(float3 c) { return c <= 0.04045 ? c / 12.92 : pow(abs((c + 0.055) / 1.055), 2.4); }
-float3 LinearToSrgb(float3 c) { return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(abs(c), 1 / 2.4) - 0.055; }
-float4 PSWarp(VSOut i) : SV_Target
-{
-    float2 f = (i.pos.xy - wGeo.xy) / wGeo.z;          // inches from the center picture's middle
-    float ax = abs(f.x);
-    if (ax > wGeo.w)
-    {
-        float sa = wCam.x, ca = wCam.y, Z = wCam.z, c0 = wGeo.w;
-        float t = (sa * c0 + ca * Z) / (sa * ax + ca * Z);    // along the camera ray, to the face
-        float along = ca * (t * ax - c0) + sa * Z * (1 - t);  // along the face from the corner
-        f = float2(sign(f.x) * (c0 + along), t * f.y);
-    }
-    float2 px = f * wGeo.z + wGeo.xy + float2(wOut.w, 0);
-    float2 cuv = px / float2(wOut.z, wOut.y);
-    float3 c = tex.SampleLevel(smp, cuv, 0).rgb;
-    [unroll] for (int s = 0; s < 2; ++s)
-    {
-        float2 q = (px - wPic[s].xy) / max(wPic[s].zw - wPic[s].xy, 1);
-        float2 uv = clamp(lerp(wSrc[s].xy, wSrc[s].zw, q), wSrc[s].xy + wTexel.xy, wSrc[s].zw - wTexel.xy);
-        float3 p = frame.Sample(smp, uv).rgb;          // (sampled everywhere: its mip level follows the warp)
-        if (wPic[s].z > wPic[s].x && all(q >= 0) && all(q <= 1))
-            c = LinearToSrgb(saturate(SrgbToLinear(p) + reflections.SampleLevel(smp, cuv, 0).rgb));
-    }
-    if (px.x < 0 || px.x > wOut.z) c = 0;              // past the canvas: left dark
-    return float4(c, 1);
-}
-
-// With perspective, the touch panel: tilted back with the hood's front, a quad
-// on screen. Each pixel's place on it (u, v) from the projective map (wPanel),
-// then the panel's picture (srcRect) there, blended in by how much of the
-// pixel it covers (so its slanted edges don't stair-step).
-float4 PSPanel(VSOut i) : SV_Target
-{
-    float3 p = float3(i.pos.xy, 1);
-    float3 q = float3(dot(wPanel[0].xyz, p), dot(wPanel[1].xyz, p), dot(wPanel[2].xyz, p));
-    float2 uv = q.xy / q.z;
-    float2 edge = min(uv, 1 - uv) / max(fwidth(uv), 1e-6);        // to the nearest edges, in pixels
-    float cover = saturate(min(edge.x, edge.y) + 0.5);
-    float3 c = tex.Sample(smp, clamp(lerp(srcRect.xy, srcRect.zw, saturate(uv)), clampRect.xy, clampRect.zw)).rgb;
-    clip(cover - 1e-3);
-    return float4(c, cover);
-}
-)";
 
     // ---------------------------------------------------------------------
     // Output windows
@@ -413,62 +325,31 @@ float4 PSPanel(VSOut i) : SV_Target
 
     bool InitPipeline()
     {
-        ID3DBlob* vsBlob = nullptr;
-        ID3DBlob* psBlob = nullptr;
-        ID3DBlob* err = nullptr;
-        const size_t len = strlen(kShader);
-
-        if (FAILED(D3DCompile(kShader, len, "compositor", nullptr, nullptr, "VSMain", "vs_4_0", 0, 0, &vsBlob, &err)))
+        if (FAILED(g_dev->CreateVertexShader(g_compositor_VSMain, sizeof(g_compositor_VSMain), nullptr, &g_vs))
+            || FAILED(g_dev->CreatePixelShader(g_compositor_PSMain, sizeof(g_compositor_PSMain), nullptr, &g_ps)))
         {
-            LOG("VS compile failed: %s", err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
-            SafeRelease(err);
-            return false;
-        }
-        if (FAILED(D3DCompile(kShader, len, "compositor", nullptr, nullptr, "PSMain", "ps_4_0", 0, 0, &psBlob, &err)))
-        {
-            LOG("PS compile failed: %s", err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
-            SafeRelease(err);
-            SafeRelease(vsBlob);
+            LOG("Shader creation failed");
             return false;
         }
 
-        bool ok = SUCCEEDED(g_dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_vs))
-               && SUCCEEDED(g_dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_ps));
-        SafeRelease(vsBlob);
-        SafeRelease(psBlob);
-        if (!ok) { LOG("Shader creation failed"); return false; }
-
-        // The perspective warp (optional: without it the window is drawn flat)
-        if (SUCCEEDED(D3DCompile(kShader, len, "compositor", nullptr, nullptr, "PSWarp", "ps_4_0", 0, 0, &psBlob, &err)))
+        // The perspective warp, and the tilted touch panel drawn with it
+        // (optional: without them the window is drawn flat)
+        D3D11_BUFFER_DESC wb = {};
+        wb.ByteWidth = sizeof(WarpConstants);
+        wb.Usage = D3D11_USAGE_DYNAMIC;
+        wb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        wb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        if (FAILED(g_dev->CreatePixelShader(g_compositor_PSWarp, sizeof(g_compositor_PSWarp), nullptr, &g_psWarp))
+            || FAILED(g_dev->CreateBuffer(&wb, nullptr, &g_warpCB)))
         {
-            D3D11_BUFFER_DESC wb = {};
-            wb.ByteWidth = sizeof(WarpConstants);
-            wb.Usage = D3D11_USAGE_DYNAMIC;
-            wb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-            wb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-            if (FAILED(g_dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_psWarp))
-                || FAILED(g_dev->CreateBuffer(&wb, nullptr, &g_warpCB)))
-            {
-                SafeRelease(g_psWarp);
-                SafeRelease(g_warpCB);
-            }
-            SafeRelease(psBlob);
-            if (SUCCEEDED(D3DCompile(kShader, len, "compositor", nullptr, nullptr, "PSPanel", "ps_4_0", 0, 0, &psBlob, &err)))
-            {
-                if (FAILED(g_dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_psPanel)))
-                    SafeRelease(g_psPanel);
-                SafeRelease(psBlob);
-            }
-            else
-            {
-                LOG("Tilted touch panel unavailable: %s", err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
-                SafeRelease(err);
-            }
+            LOG("Perspective warp unavailable");
+            SafeRelease(g_psWarp);
+            SafeRelease(g_warpCB);
         }
-        else
+        if (FAILED(g_dev->CreatePixelShader(g_compositor_PSPanel, sizeof(g_compositor_PSPanel), nullptr, &g_psPanel)))
         {
-            LOG("Perspective warp unavailable: %s", err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
-            SafeRelease(err);
+            LOG("Tilted touch panel unavailable");
+            SafeRelease(g_psPanel);
         }
 
         D3D11_BUFFER_DESC cbd = {};
@@ -494,7 +375,7 @@ float4 PSPanel(VSOut i) : SV_Target
         dd.DepthEnable = FALSE;
         dd.StencilEnable = FALSE;
 
-        ok = SUCCEEDED(g_dev->CreateBuffer(&cbd, nullptr, &g_cb))
+        const bool ok = SUCCEEDED(g_dev->CreateBuffer(&cbd, nullptr, &g_cb))
           && SUCCEEDED(g_dev->CreateSamplerState(&sd, &g_samp))
           && SUCCEEDED(g_dev->CreateBlendState(&bd, &g_blend))
           && SUCCEEDED(g_dev->CreateRasterizerState(&rd, &g_rs))

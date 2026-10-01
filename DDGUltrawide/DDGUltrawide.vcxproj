@@ -53,7 +53,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)third_party\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir)shaders;$(SolutionDir)third_party\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -95,6 +95,18 @@
     <ClCompile Include="..\third_party\minhook\src\hook.c" />
     <ClCompile Include="..\third_party\minhook\src\trampoline.c" />
     <ClCompile Include="..\third_party\minhook\src\hde\hde64.c" />
+  </ItemGroup>
+  <!-- The shaders, compiled to bytecode headers the DLL embeds (before the C++ that includes them) -->
+  <ItemGroup>
+    <CustomBuild Include="src\shaders\compile.cmd">
+      <Message>Compiling shaders</Message>
+      <Command>call "%(FullPath)" "$(WindowsSdkDir)bin\$(TargetPlatformVersion)\x64\fxc.exe" "$(IntDir)shaders"</Command>
+      <AdditionalInputs>$(MSBuildProjectDirectory)\src\shaders\cabinetlight.hlsl;$(MSBuildProjectDirectory)\src\shaders\compositor.hlsl</AdditionalInputs>
+      <Outputs>$(IntDir)shaders\cabinetlight_PSShade.h;$(IntDir)shaders\compositor_PSMain.h</Outputs>
+      <BuildInParallel>false</BuildInParallel>
+    </CustomBuild>
+    <None Include="src\shaders\cabinetlight.hlsl" />
+    <None Include="src\shaders\compositor.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\log.h" />

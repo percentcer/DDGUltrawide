@@ -30,6 +30,10 @@ touch panel). The DLL:
 2. The result is `bin\Release\version.dll`. It uses the static runtime, so no
    Visual C++ Redistributable is needed.
 
+The shaders (`src\shaders\*.hlsl`) are compiled during the build with the
+Windows SDK's `fxc` (`src\shaders\compile.cmd`) and embedded in the DLL as
+bytecode, so nothing is compiled or written to disk at runtime.
+
 ## Install
 
 1. Copy `version.dll` and `DDGUltrawide.ini` into `<densha 5.80.02 root>\TG4AC\Binaries\Win64`.
