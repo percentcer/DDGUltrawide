@@ -70,6 +70,13 @@ namespace
             if (msg == WM_NCDESTROY && lk != g_locked.end()) g_locked.erase(lk);
         }
         if (!orig) return DefWindowProcW(hwnd, msg, wp, lp);
+        // Keep it out of Alt+Tab and the taskbar, whatever styles the game
+        // sets on it later (see Hook_CreateWindowExW)
+        if (msg == WM_STYLECHANGING && wp == static_cast<WPARAM>(GWL_EXSTYLE) && lp && locked)
+        {
+            auto* st = reinterpret_cast<STYLESTRUCT*>(lp);
+            st->styleNew = (st->styleNew | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+        }
         if (msg == kFocusMessage && kFocusMessage)
         {
             TakeForeground(hwnd);
@@ -118,6 +125,13 @@ namespace
     HWND WINAPI Hook_CreateWindowExW(DWORD exStyle, LPCWSTR cls, LPCWSTR name, DWORD style, int x, int y,
                                      int w, int h, HWND parent, HMENU menu, HINSTANCE inst, LPVOID param)
     {
+        // The game's main window stays out of Alt+Tab and the taskbar: our
+        // output window stands in for it there (so its thumbnail shows the
+        // output, not the game's raw frame). Set before it's ever shown.
+        const bool unreal = cls && HIWORD(reinterpret_cast<ULONG_PTR>(cls)) != 0 && wcscmp(cls, L"UnrealWindow") == 0;
+        if (unreal && !parent && !(style & WS_CHILD))
+            exStyle = (exStyle | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+
         HWND hwnd = g_origCreateWindowExW(exStyle, cls, name, style, x, y, w, h, parent, menu, inst, param);
         if (!hwnd) return hwnd;
 
@@ -125,14 +139,24 @@ namespace
         GetClassNameW(hwnd, className, 64);
         if (wcscmp(className, L"UnrealWindow") != 0) return hwnd;   // only the engine's own windows
 
-        std::lock_guard<std::mutex> lock(g_mutex);
-        auto prev = reinterpret_cast<WNDPROC>(
-            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&SubclassProc)));
-        if (prev)
         {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            auto prev = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&SubclassProc)));
+            if (!prev) return hwnd;
             g_origProcs[hwnd] = prev;
             g_locked[hwnd] = !parent;
-            LOG("Game window %p created (%dx%d); size limit lifted", hwnd, w, h);
+        }
+        LOG("Game window %p created (%dx%d); size limit lifted", hwnd, w, h);
+
+        // (Outside the lock: changing its style calls back into SubclassProc)
+        if (!parent && !(style & WS_CHILD))
+        {
+            const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            const LONG_PTR want = (ex | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+            if (ex != want) SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
+            LOG("  kept out of Alt+Tab and the taskbar (extended style %08llx -> %08llx)",
+                static_cast<unsigned long long>(ex), static_cast<unsigned long long>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)));
         }
         return hwnd;
     }

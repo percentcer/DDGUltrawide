@@ -6,6 +6,7 @@
 #include "touch.h"
 
 #include <windows.h>
+#include <shellapi.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <MinHook.h>
@@ -23,6 +24,7 @@
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace
 {
@@ -162,6 +164,8 @@ namespace
         return "Output";
     }
 
+    std::atomic<HWND> g_attachedGame{ nullptr };   // the game's window, once our windows are tied to it
+
     LRESULT CALLBACK OutWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
         LRESULT touchResult = 0;
@@ -171,15 +175,42 @@ namespace
         {
         case WM_MOUSEACTIVATE:
             return MA_NOACTIVATE;   // never take focus from the game
+        case WM_ACTIVATE:
+            // Chosen in Alt+Tab or the taskbar: the game takes the focus (its
+            // keys, Alt+F4 included, go to it)
+            if (LOWORD(wp) != WA_INACTIVE)
+                if (HWND game = g_attachedGame.load()) FocusGameWindow(game);
+            return 0;
         case WM_ERASEBKGND:
             return 1;
         case WM_CLOSE:
-            return 0;               // only closes with the game
+            // Closed from the taskbar or Alt+Tab: close the game (we close with it)
+            if (HWND game = g_attachedGame.load()) PostMessageW(game, WM_CLOSE, 0, 0);
+            return 0;
         case WM_APP_ATTACH:
         {
             HWND game = reinterpret_cast<HWND>(wp);
             TouchSetGameWindow(game);
-            if (hwnd == g_outs[kMainWindow].hwnd.load()) FocusGameWindow(game);
+            if (hwnd == g_outs[kMainWindow].hwnd.load())
+            {
+                g_attachedGame = game;
+                FocusGameWindow(game);
+
+                // Standing in for it in Alt+Tab and the taskbar: its title and
+                // icon (read without messaging its thread)
+                wchar_t title[256] = {};
+                if (InternalGetWindowText(game, title, 256) > 0) SetWindowTextW(hwnd, title);
+                HICON iconBig = reinterpret_cast<HICON>(GetClassLongPtrW(game, GCLP_HICON));
+                HICON iconSmall = reinterpret_cast<HICON>(GetClassLongPtrW(game, GCLP_HICONSM));
+                if (!iconBig)
+                {
+                    wchar_t exe[MAX_PATH];
+                    if (GetModuleFileNameW(nullptr, exe, MAX_PATH)) ExtractIconExW(exe, 0, &iconBig, &iconSmall, 1);
+                }
+                if (iconBig) SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(iconBig));
+                if (iconSmall || iconBig) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(iconSmall ? iconSmall : iconBig));
+                LOG("Output window stands in for the game in Alt+Tab and the taskbar (\"%ls\")", title);
+            }
             if (g_cfg.gameWindowMode == 0)
             {
                 // Owned windows always stay above their owner in the z-order.
@@ -254,7 +285,11 @@ namespace
 
     HWND CreateOutputWindow(Output& o, const wchar_t* className, const wchar_t* title)
     {
-        HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+        // The main window is the app in Alt+Tab and the taskbar (the game's
+        // own window is kept out of them, gamewindow.cpp): its thumbnail shows
+        // the output. The touch panel's window stays out of them.
+        const DWORD app = &o == &g_outs[kMainWindow] ? WS_EX_APPWINDOW : WS_EX_TOOLWINDOW;
+        HWND hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | app,
                                     className, title, WS_POPUP, o.x, o.y, o.w, o.h,
                                     nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         if (hwnd)
