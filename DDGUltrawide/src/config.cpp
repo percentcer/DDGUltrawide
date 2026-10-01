@@ -394,7 +394,7 @@ namespace
     constexpr float kHoodHeightMm = 317.0f;
     constexpr float kHoodDepthMm = 335.0f;
     constexpr float kHoodFlangeMm = 28.0f;
-    constexpr float kHoodSheetMm = 1.5f;        // its sheet's thickness (its edges round over about as much)
+    constexpr float kHoodSheetMm = 3.0f;        // its sheet's thickness, a little more than real (its edges round over about as much; thick enough to show their rounding)
     constexpr float kHoodScrewMm = 8.0f;        // head diameter
     struct HoodScrewRow { float out; int n; float across[4]; };     // out from the wall (of the depth); across the plate (of its width)
     constexpr HoodScrewRow kPlateScrews[2] = { { 0.40f, 3, { 0.03f, 0.5f, 0.97f } },

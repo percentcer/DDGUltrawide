@@ -823,9 +823,17 @@ float3 HoodShade(float3 X, float3 N, float3 r)
     // the whole way).
     float bend = flange && !isTop ? 1 : isTop ? saturate((X.z - (D - HOOD_BEND)) / HOOD_BEND) : isFront ? saturate(1 - s / HOOD_BEND) : 1;
     if (isTop) n = normalize(n + float3(0, -hood.w, 1) * bend);
-    // A flange's front end: its top carries on over the bend to the front, so
-    // it's shaded as the top (blurred, as the bend's reflection is)
-    if (flange && N.z > 0.5) n = float3(0, -1, 0);
+    // A flange's front end: rounded over, from its top (facing up) down to
+    // facing the player, so it shows a gradient (what's above, down to the
+    // booth behind) rather than one flat color. Blurred a little, as the other
+    // bends are, since it's only a few pixels tall.
+    if (flange && N.z > 0.5)
+    {
+        float down = saturate((X.y - (hood.y - hoodFlange.z)) / hoodFlange.z);   // 0 at its top, 1 at its bottom
+        float a = down * down * 1.5708;                 // (a quarter round, seen side on: most of its height is near the top)
+        n = normalize(float3(0, -cos(a), sin(a)));
+        bend = 0.6;                                     // (not the flat sides' full blur, which would wash it out)
+    }
 
     // On the top: the center plate's flanges (traced as thin boxes; their
     // sides are blurred like the other bends). Each one's outer edge rolls over
@@ -1125,24 +1133,35 @@ float3 FrameShade(float3 Q, float2 q, float3 r, float outer, float inner, float 
     return diffuse + F * SeenFar(Q + n * 0.02, r + 2 * c * n, 0.01 + 0.5 * bend, t);
 }
 
-float4 PSHood(float4 pos : SV_Position) : SV_Target
+// The hood as seen at canvas point cpx: its color (linear, before exposure),
+// with alpha 1, or alpha 0 where it isn't (or the touch panel shows through,
+// in the flat view). key: what's there (a face, a flange, a screw, the touch
+// panel's frame), to tell an edge, when only that's wanted.
+float4 HoodSample(float2 cpx, bool perspective, bool shade, out float key)
 {
-    float2 cpx = float2(pos.x + sTarget.z, pos.y);      // in the canvas
     float2 f = (cpx - origin.xy) / view.z;              // on the wall
-    bool perspective = sTarget.w > 0.5;
     float3 P = perspective ? eye.xyz : float3(f, 1000);
     float3 r = perspective ? normalize(float3(f, 0) - eye.xyz) : float3(0, 0, -1);
     float3 N;
     float t = HoodHit(P, r, N);
-    if (t > 1e8) discard;
+    key = -1000;                                        // (nothing: below any face's key)
+    if (t > 1e8) return 0;
+    float3 X = P + r * t;
+    key = dot(round(N * 2), float3(1, 5, 25)) + (X.y < hood.y - 1e-4 ? 100 : 0);
+    if (N.y < -0.5)
+    {
+        for (int i = 0; i < (int)hoodFlange.w; ++i)
+            if (length(X.xz - hoodScrews[i].xy) < hoodScrews[i].z) key += 200 + i;
+        if (abs(abs(X.x) - (hoodFlange.x + hoodFlange.y)) < hoodFlange.z) key += 50;   // a flange's rolled edge, and its shadow
+    }
 
     // The touch panel sits in the hood's opening (it's drawn there, not by us),
     // in a black surround (duller). With perspective, it's a sheet leaning with
     // the hood's front, a little in front of it, drawn over the hood afterward
     // (blending its edges), in its glossy frame; under it, dark (its edges
     // blend with that)
-    float3 X = P + r * t;
-    float3 c = HoodShade(X, N, r);
+    float3 c = 0;
+    if (shade) c = HoodShade(X, N, r);
     if (perspective && panelSheet.x > 0)
     {
         float s = hood.w, D = hood.z + panelSheet.w, k = sqrt(1 + s * s);
@@ -1154,16 +1173,56 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         float inner = max(abs(q.x) - hw, max(-q.y, q.y - panelH));
         float px = (eye.z - Q.z) / eye.z / view.z;       // a pixel, in inches, at Q
         float cover = u > 0 && u <= t + 1 ? saturate(outer / px + 0.5) : 0;   // (its outside edge blends)
-        if (cover > 0) c = lerp(c, inner <= 0 ? 0.1 * c : FrameShade(Q, q, r, outer, inner, panelH), cover);
+        if (cover > 0)
+        {
+            key = 1000 + (inner <= 0 ? 1 : 0);
+            float side = hw + panelFrame.x - panelFrameScrews.x;
+            for (int i = 0; i < 3; ++i)
+                if (length(float2(abs(q.x), q.y + panelFrame.y) - float2(side, panelFrameScrews[1 + i])) < panelFrameScrew.x) key += 10 + i;
+            if (shade) c = lerp(c, inner <= 0 ? 0.1 * c : FrameShade(Q, q, r, outer, inner, panelH), cover);
+        }
     }
     else if (panelRect.z > panelRect.x && all(cpx >= panelRect.xy - panelSurround.x) && all(cpx <= panelRect.zw + panelSurround.x))
     {
-        if (all(cpx >= panelRect.xy) && all(cpx <= panelRect.zw)) discard;
+        if (all(cpx >= panelRect.xy) && all(cpx <= panelRect.zw)) { key = -2000; return 0; }
         c *= 0.1;
+        key = 2000;
     }
-    c *= light.z;
-    c = c < 0.8 ? c : 0.8 + 0.2 * (1 - exp(-(c - 0.8) / 0.2));
-    return float4(LinearToSrgb(saturate(c)), 1);
+    return float4(c, 1);
+}
+
+// Each pixel's view traced to the hood. Where its corners all see the same
+// thing, it's shaded once; at an edge (of a flange, a screw, the hood itself),
+// at 3 x 3 points across it and averaged, its outline blending with what's
+// behind (so edges don't stair-step).
+float4 PSHood(float4 pos : SV_Position) : SV_Target
+{
+    float2 cpx = float2(pos.x + sTarget.z, pos.y);      // in the canvas
+    bool perspective = sTarget.w > 0.5;
+    float k0, k1, k2, k3, k4;
+    HoodSample(cpx + float2(-0.4, -0.4), perspective, false, k1);
+    HoodSample(cpx + float2(0.4, -0.4), perspective, false, k2);
+    HoodSample(cpx + float2(-0.4, 0.4), perspective, false, k3);
+    HoodSample(cpx + float2(0.4, 0.4), perspective, false, k4);
+    float4 c;
+    if (k1 == k2 && k1 == k3 && k1 == k4)
+    {
+        if (k1 <= -1000) discard;                       // (nothing there)
+        c = HoodSample(cpx, perspective, true, k0);
+        if (c.a <= 0) discard;
+    }
+    else
+    {
+        c = 0;
+        [loop] for (int i = 0; i < 9; ++i)
+            c += HoodSample(cpx + (float2(i % 3, i / 3) - 1) / 3, perspective, true, k0);
+        if (c.a <= 0) discard;
+        c.rgb /= c.a;
+        c.a /= 9;
+    }
+    float3 L = c.rgb * light.z;
+    L = L < 0.8 ? L : 0.8 + 0.2 * (1 - exp(-(L - 0.8) / 0.2));
+    return float4(LinearToSrgb(saturate(L)), c.a);
 }
 )";
 
@@ -1772,7 +1831,7 @@ bool CabinetLightHood(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, 
     if (!g_psHood || !g_enabled || !target || !g_under.srv) return false;
     CommonState(ctx);
     UnbindSRVs(ctx);
-    ctx->OMSetBlendState(g_blendOff, nullptr, 0xFFFFFFFF);
+    ctx->OMSetBlendState(g_blendCover, nullptr, 0xFFFFFFFF);   // (its outline blends by coverage)
     ctx->OMSetRenderTargets(1, &target, nullptr);
     Viewport(ctx, width, height);
     ctx->VSSetShader(g_vsShape, nullptr, 0);

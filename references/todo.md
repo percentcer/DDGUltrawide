@@ -1,16 +1,15 @@
 ## software
-- figure out what to do with the touch panel when in arcade mode with external monitor (draw less of the console? keep it and duplicate?)
-- test with zuiki
-- use a pre-captured env map to provide more interesting reflections
+- fix errant reflections from touch panel (side panels wouldn't actually see it)
 - performance pass, make sure we're not doing anything too crazy
-- cleanup pass, remove old unused code
+- use a pre-captured env map to provide more interesting reflections
 - disable hotkeys by default
+- cleanup pass, remove old unused code
 - consider drawing the fasteners along the top panel
 - consider drawing the seam along the top panel
-- fix errant reflections from touch panel (side panels wouldn't actually see it)
+- ability to launch classics (big task)
+- compact cabinet mode? (big task)
+- dedicated touchscreen streaming app? (big task)
 - convert to using meshes? (big task)
-- ability to launch classics
-- compact cabinet mode?
 
 ## physical
 - measure actual thickness of acrylic
