@@ -172,6 +172,9 @@ void LoadConfig(const std::wstring& ini)
     float light;
     if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetScreenNits", L""), light)) g_cfg.cabinetScreenNits = std::fmax(light, 1.0f);
     if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetRoomLux", L""), light)) g_cfg.cabinetRoomLux = std::fmax(light, 0.0f);
+    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetRoofLights", L""), light)) g_cfg.roofLights = std::fmax(light, 0.0f);
+    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetRoofLightGlow", L""), light)) g_cfg.roofLightGlowMm = std::fmax(light, 0.0f);
+    if (ParseNumber(ReadString(ini, L"Layout", L"ArcadeCabinetHoodGloss", L""), light)) g_cfg.hoodGlossDeg = std::fmin(std::fmax(light, 0.0f), 45.0f);
     const std::wstring color = ReadString(ini, L"Layout", L"ArcadeCabinetColor", L"");
     if (!color.empty() && !ParseColor(color, g_cfg.cabinetColor))
         LOG("Bad [Layout] ArcadeCabinetColor: %ls (using the default)", color.c_str());
@@ -672,6 +675,19 @@ namespace
     // way the room's light gets into the booth (with a little more over its
     // walls and through its top).
     constexpr float kOutside = 1.0f;            // the arcade through the windows, in room-light units
+
+    // The roof's two LED panels ("ROOF LED PANEL": tape LEDs behind a diffuser
+    // in the center roof), from "CENTER ROOF ASSY" (page 141, isometric, so in
+    // proportion; the roof taken as the booth's depth behind the screens and
+    // 0.69 as wide): each about 480 x 110 mm, running front to back from 36 to
+    // 66% of the way back, centered a third of the roof's width either side of
+    // its middle. Lit with the cabinet (not the arcade's lighting); how bright
+    // is ArcadeCabinetRoofLights (by default about 4 times the screens' white:
+    // in photos of real cabinets they're far brighter than the screens, and
+    // light the booth's walls a light, even grey).
+    constexpr float kRoofLedHalfGapMm = 360.0f;     // either side of the middle, to the panel's middle
+    constexpr float kRoofLedWidthMm = 110.0f;
+    constexpr float kRoofLedFromTo[2] = { 0.36f, 0.66f };   // of the way back to the back wall
     constexpr float kBackWindowsMm[3][4] = { { 708.0f, 979.0f, 1198.0f, 1753.0f },
                                              { -325.0f, 979.0f, 325.0f, 1753.0f },
                                              { -1215.0f, 1102.0f, -650.0f, 1692.0f } };
@@ -1120,7 +1136,22 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
         const float floorC[3] = { -halfW, floorY, 0 }, floorN[3] = { 0, -1, 0 };
         face(floorC, flatA, flatB, 6, 4, floorN, floorLin);
 
+        // The roof's LED panels (3 patches each, front to back)
+        const float ledX0 = Mm(kRoofLedHalfGapMm - kRoofLedWidthMm / 2), ledX1 = Mm(kRoofLedHalfGapMm + kRoofLedWidthMm / 2);
+        const float ledZ0 = back * kRoofLedFromTo[0], ledZ1 = back * kRoofLedFromTo[1];
+        scene.roofLeds[0] = ledX0; scene.roofLeds[1] = ledX1; scene.roofLeds[2] = ledZ0; scene.roofLeds[3] = ledZ1;
+        scene.roofLedRadiance = g_cfg.roofLights;
+        for (int side = -1; side <= 1; side += 2)
+            for (int i = 0; i < 3; ++i)
+            {
+                const float pos[3] = { side * (ledX0 + ledX1) / 2, ceilY + 0.1f, ledZ0 + (ledZ1 - ledZ0) * (i + 0.5f) / 3 };
+                const float down[3] = { 0, 1, 0 }, none3[3] = { 0, 0, 0 };
+                addPatch(pos, down, (ledX1 - ledX0) * (ledZ1 - ledZ0) / 3, none3);
+                scene.patches.back().emission = g_cfg.roofLights;
+            }
+
         // The windows: the arcade outside, shining in (2 x 2 patches each)
+        const float roomRadiance = g_cfg.cabinetRoomLux / (3.14159265f * std::fmax(g_cfg.cabinetScreenNits, 1.0f));
         const float none[3] = { 0, 0, 0 };
         auto window = [&](const float c0[3], const float a[3], const float b[3], const float n[3])
         {
@@ -1131,7 +1162,7 @@ bool GetCabinetScene(int width, int height, CabinetScene& scene)
                     float pos[3];
                     for (int k = 0; k < 3; ++k) pos[k] = c0[k] + a[k] * (i + 0.5f) / 2 + b[k] * (j + 0.5f) / 2 + n[k] * 0.1f;
                     addPatch(pos, n, la * lb / 4, none);
-                    scene.patches.back().emission = kOutside;
+                    scene.patches.back().emission = kOutside * roomRadiance;
                 }
         };
         for (const auto& w : scene.backWindows)

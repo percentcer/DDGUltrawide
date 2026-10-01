@@ -1,7 +1,4 @@
 ## software
-- tilt touch screen to match angle of grilles
-- add glass reflections to touch panel
-- draw that vertical seams visible where side panels meet center panel
 - consider drawing the fasteners along the top panel
 - consider drawing the seam along the top panel
 - fix errant reflections from touch panel (side panels wouldn't actually see it)
@@ -11,6 +8,8 @@
 - disable hotkeys by default
 - use a pre-captured env map to provide more interesting reflections
 - convert to using meshes? (big task)
+- TeknoParrot seems to ignore scroll wheel? why?
+- TeknoParrot forces game to EnableCheatKey=True, why?
 
 ## physical
 - measure actual thickness of acrylic

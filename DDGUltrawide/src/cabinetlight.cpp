@@ -81,7 +81,7 @@ cbuffer Scene : register(b1)
     float4 cellUV[MAX_CELLS];       // uv in the game's frame, mip level
     float4 patchPos[MAX_PATCHES];   // xyz, area
     float4 patchNrm[MAX_PATCHES];   // xyz
-    float4 patchAlb[MAX_PATCHES];   // linear rgb, emission (room-light units)
+    float4 patchAlb[MAX_PATCHES];   // linear rgb, emission (screen whites)
     float4 counts;                  // cells, patches, cube scale
     float4 view;                    // width, height, pixels per inch
     float4 origin;                  // origin x, y (px)
@@ -104,6 +104,8 @@ cbuffer Scene : register(b1)
     float4 panelFrameScrew;         // ...their head radius
     float4 backWindows[3];          // the booth's windows: in its back wall (x from, y from, x to, y to)
     float4 sideWindow;              // ...and in each side wall (z from, y from, z to, y to)
+    float4 roofLeds;                // the roof's LED panels: x from, to (either side of the middle); z from, to
+    float4 roofLed;                 // ...how bright (screen whites), their soft edge (inches); the hood's gloss (radians its reflections blur)
     float4 hoodFlange;              // the center plate's flanges: start (x, either side), width, thickness; the screws' count
     float4 hoodScrews[MAX_HOOD_SCREWS];   // the screws on the hood's top: x, z, head radius
 };
@@ -304,7 +306,7 @@ float3 PatchDirect(int i)
 float4 PSPatches(float4 pos : SV_Position) : SV_Target
 {
     int i = (int)pos.x;
-    return float4(patchAlb[i].rgb * PatchDirect(i) / PI + patchAlb[i].w * light.y, 1);
+    return float4(patchAlb[i].rgb * PatchDirect(i) / PI + patchAlb[i].w, 1);
 }
 
 float4 PSBounce(float4 pos : SV_Position) : SV_Target
@@ -319,7 +321,7 @@ float4 PSBounce(float4 pos : SV_Position) : SV_Target
         float3 e = FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w);
         E += e * saturate(dot(N, w));
     }
-    return float4(patchAlb[i].rgb * E / PI + patchAlb[i].w * light.y, 1);
+    return float4(patchAlb[i].rgb * E / PI + patchAlb[i].w, 1);
 }
 
 // ---- 3. Ambient cube: light from cells (t0) and patches (t1), by direction ----
@@ -614,10 +616,25 @@ float3 SeenFar(float3 P, float3 r, float spread, out float t)
         window = all(X.zy >= sideWindow.xy) && all(X.zy <= sideWindow.zw);
     if (window) return OUTSIDE * light.y;
 
+    // The roof's LED panels: diffusers in a recess, so their edges are soft,
+    // and softer still as seen in a glossy surface (by how far it spreads its
+    // reflection, over how far away they are), so they don't glint off in
+    // single pixels
+    float led = 0;
+    if (face == 3)
+    {
+        float soft = roofLed.y + t * spread;           // inches, either side of an edge (the glow, and the blur)
+        float2 c = float2((roofLeds.x + roofLeds.y) / 2, (roofLeds.z + roofLeds.w) / 2);
+        float2 h = float2((roofLeds.y - roofLeds.x) / 2, (roofLeds.w - roofLeds.z) / 2);
+        float2 d = abs(float2(abs(X.x), X.z) - c) - h;  // past the edges (negative: inside)
+        float2 k = saturate(0.5 - d / (2 * soft));
+        led = k.x * k.y * min(1, 2 * h.x / (2 * soft)) * min(1, 2 * h.y / (2 * soft));   // (spread thin as it blurs)
+    }
+
     float2 uv = face == 0 ? float2((X.x + hw) / (2 * hw), (X.y - cy) / (fy - cy))
               : face <= 2 ? float2((X.z - fz) / (bk - fz), (X.y - cy) / (fy - cy))
               : float2((X.x + hw) / (2 * hw), X.z / bk);
-    return BoothMap(face, uv);
+    return lerp(BoothMap(face, uv), roofLed.x, led);
 }
 
 )"
@@ -707,7 +724,6 @@ float Fresnel(float c, float n)
     return 0.5 * (rs * rs + rp * rp);
 }
 
-static const float HOOD_SPREAD = 0.02;   // the hood's gloss: its reflections blur by this (radians)
 
 // What the hood looks like at X (hit along r, with normal N): the light on it
 // (from the booth map), and a glossy reflection of the rest. Its grilles and
@@ -820,7 +836,7 @@ float3 HoodShade(float3 X, float3 N, float3 r)
     // The screws: black-finished metal, a little more reflective than the paint
     float F = screw ? 0.12 + 0.88 * pow(1 - c, 5) : Fresnel(max(c, 1e-3), 1.5);
     if (screw) diffuse *= 0.3;
-    return diffuse + F * glossK * SeenFar(X + N * 0.02, r2, HOOD_SPREAD + 0.5 * bend, t);
+    return diffuse + F * glossK * SeenFar(X + N * 0.02, r2, roofLed.z + 0.5 * bend, t);
 }
 
 // What's seen from P looking along r: as SeenFar, unless the hood is in the way
@@ -1006,7 +1022,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         float patchPos[kMaxPatches][4], patchNrm[kMaxPatches][4], patchAlb[kMaxPatches][4];
         float counts[4], view[4], origin[4], light[4], wall[4], geom[4], booth[4], booth2[4], eye[4];
         float hood[4], hood2[4], hoodGrille[4], grilleCells[4], hoodOpening[4], panelRect[4], panelSurround[4], panelSheet[4];
-        float panelFrame[4], panelFrameScrews[4], panelFrameScrew[4], backWindows[3][4], sideWindow[4];
+        float panelFrame[4], panelFrameScrews[4], panelFrameScrew[4], backWindows[3][4], sideWindow[4], roofLeds[4], roofLed[4];
         float hoodFlange[4], hoodScrews[kMaxHoodScrews][4];
     };
 
@@ -1251,6 +1267,10 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         sc->panelFrameScrew[0] = scene.panelFrameScrews[4];
         memcpy(sc->backWindows, scene.backWindows, sizeof(sc->backWindows));
         memcpy(sc->sideWindow, scene.sideWindow, sizeof(sc->sideWindow));
+        memcpy(sc->roofLeds, scene.roofLeds, sizeof(sc->roofLeds));
+        sc->roofLed[0] = scene.roofLedRadiance;
+        sc->roofLed[1] = g_cfg.roofLightGlowMm / 25.4f;
+        sc->roofLed[2] = g_cfg.hoodGlossDeg * 3.14159265f / 180;
         for (int i = 0; i < 3; ++i) sc->hoodFlange[i] = scene.hoodFlange[i];
         const int screws = static_cast<int>(scene.hoodScrews.size() < kMaxHoodScrews ? scene.hoodScrews.size() : kMaxHoodScrews);
         sc->hoodFlange[3] = static_cast<float>(screws);

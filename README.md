@@ -52,7 +52,9 @@ See the comments in `DDGUltrawide.ini`. In short:
   cabinet (`ArcadeCabinet`: its walls in `ArcadeCabinetColor`, a metal frame
   with screws around each screen, acrylic sheets that reflect the booth, and
   the black hood under the center screen), lit by the game's own
-  screens (`ArcadeCabinetScreenNits`, `ArcadeCabinetRoomLux`), with the side
+  screens (`ArcadeCabinetScreenNits`, `ArcadeCabinetRoomLux`) and the booth's
+  roof lights (`ArcadeCabinetRoofLights`, `ArcadeCabinetRoofLightGlow`; the
+  hood's paint with `ArcadeCabinetHoodGloss`), with the side
   cabinets turned toward you in perspective (`ArcadeCameraDistance`, how far
   you stand from the center screen in mm, 2250 by default, 0 = flat; and
   `ArcadeFov`, the horizontal field of view in degrees, 0 = the center screen

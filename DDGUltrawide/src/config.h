@@ -32,6 +32,9 @@ struct Config
     float cabinetColor[3] = { 0xBA / 255.0f, 0xB3 / 255.0f, 0xA5 / 255.0f };   // the cabinet's beige-gray
     float cabinetScreenNits = 1000.0f;  // the screens' white, cd/m^2
     float cabinetRoomLux = 0.0f;        // the arcade's own lighting falling on the cabinet, lux (0 = none)
+    float roofLights = 1.0f;            // the booth's roof LED panels, in screen whites (0 = off)
+    float roofLightGlowMm = 25.0f;      // their soft edge in reflections, mm
+    float hoodGlossDeg = 1.15f;         // how far the hood's paint blurs its reflections, degrees
 
     // [Source] S0..: where each screen is in the game's own frame
     std::vector<Rect> sources;
@@ -119,7 +122,7 @@ struct CabinetEmitter
     float uv[2];                // screen cell: where it is in the game's frame
     float lod;                  // screen cell: mip level covering it with about one texel
     float albedo[3];            // wall patch: its (linear) color
-    float emission;             // wall patch: light it gives off itself (a window: the arcade outside), in room-light units
+    float emission;             // wall patch: light it gives off itself (a window, a roof light), in screen whites
 };
 
 // Everything the cabinet's lighting needs for a width x height main window.
@@ -147,6 +150,10 @@ struct CabinetScene
     // The booth's windows (inches, as the booth): 3 in its back wall (x from,
     // y from, x to, y to) and 1 in each side wall (z from, y from, z to, y to)
     float backWindows[3][4], sideWindow[4];
+    // The two roof LED panels (inches, on the ceiling): either side of the
+    // middle (x from, x to; mirrored), front to back (z from, z to), and how
+    // bright (in screen whites)
+    float roofLeds[4], roofLedRadiance;
     float eye[3];                           // who's looking, for reflections
     float acrylicIn;                        // the acrylic sheets' thickness
     // The hood under the center screen (drawn over everything, in 3D; it spans
