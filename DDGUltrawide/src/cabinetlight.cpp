@@ -5,6 +5,9 @@
 #include <d3dcompiler.h>
 #include <cmath>
 #include <cstring>
+#include <cstdint>
+#include <cwchar>
+#include <string>
 #include <vector>
 
 // How it works, per frame:
@@ -982,9 +985,8 @@ float4 PSChrome(float4 pos : SV_Position) : SV_Target
     // pixel, and averaged, so a glint covering part of a pixel shows as part
     // of it (rather than flickering on and off)
     float3 L = 0;
-    [unroll] for (int j = 0; j < 3; ++j)
-        [unroll] for (int i = 0; i < 3; ++i)
-            L += ChromeAt(pos.xy + (float2(i, j) - 1) / 3, albedo);
+    [loop] for (int k = 0; k < 9; ++k)                                  // (a loop: unrolled, it takes long to compile)
+        L += ChromeAt(pos.xy + (float2(k % 3, k / 3) - 1) / 3, albedo);
     L *= light.z / 9;
     L = L < 0.8 ? L : 0.8 + 0.2 * (1 - exp(-(L - 0.8) / 0.2));
     return float4(LinearToSrgb(saturate(L)), metal);
@@ -1161,12 +1163,42 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     bool g_enabled = false;     // the cabinet is drawn at this size
     int g_cellCount = 0, g_patchCount = 0;
 
+    // Compiled shaders are kept next to the DLL (DDGUltrawide.shaders\), named
+    // by a fingerprint of the source, so they're only compiled once (it takes
+    // a few seconds) and again whenever the source changes
+    std::wstring ShaderCachePath(const char* entry, const char* profile)
+    {
+        uint64_t h = 1469598103934665603ull;                    // FNV-1a
+        auto mix = [&](const char* p) { for (; *p; ++p) { h ^= static_cast<unsigned char>(*p); h *= 1099511628211ull; } h ^= 0xff; h *= 1099511628211ull; };
+        mix(kShader); mix(entry); mix(profile);
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&ShaderCachePath), &self);
+        wchar_t path[MAX_PATH];
+        const DWORD len = GetModuleFileNameW(self, path, MAX_PATH);
+        std::wstring dir(path, len);
+        dir = dir.substr(0, dir.find_last_of(L"\\/") + 1) + L"DDGUltrawide.shaders\\";
+        wchar_t name[160];
+        swprintf_s(name, L"%hs-%016llx.cso", entry, static_cast<unsigned long long>(h));
+        return dir + name;
+    }
+
     bool Compile(const char* entry, const char* profile, ID3DBlob** blob)
     {
+        const std::wstring cache = ShaderCachePath(entry, profile);
+        if (SUCCEEDED(D3DReadFileToBlob(cache.c_str(), blob))) return true;
+
         ID3DBlob* err = nullptr;
+        const ULONGLONG t0 = GetTickCount64();
         const HRESULT hr = D3DCompile(kShader, strlen(kShader), "cabinetlight", nullptr, nullptr, entry, profile, 0, 0, blob, &err);
         if (FAILED(hr))
             LOG("Cabinet shader %s failed: %s", entry, err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
+        else
+        {
+            LOG("Cabinet shader %s compiled in %llu ms (saved for next time)", entry, GetTickCount64() - t0);
+            CreateDirectoryW(cache.substr(0, cache.find_last_of(L'\\')).c_str(), nullptr);
+            D3DWriteBlobToFile(*blob, cache.c_str(), TRUE);
+        }
         SafeRelease(err);
         return SUCCEEDED(hr);
     }
