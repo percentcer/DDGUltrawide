@@ -28,7 +28,8 @@ touch panel). The DLL:
 1. Open `DDGUltrawide.sln` in Visual Studio 2022, pick **Release | x64**, and
    use **Build -> Rebuild Solution**.
 2. The result is `bin\Release\version.dll`. It uses the static runtime, so no
-   Visual C++ Redistributable is needed.
+   Visual C++ Redistributable is needed. A Release build also packages it with
+   `DDGUltrawide.ini` into `DDGUltrawide.zip` in the repo root, ready to share.
 
 The shaders (`src\shaders\*.hlsl`) are compiled during the build with the
 Windows SDK's `fxc` (`src\shaders\compile.cmd`) and embedded in the DLL as
@@ -36,8 +37,7 @@ bytecode, so nothing is compiled or written to disk at runtime.
 
 ## Install
 
-1. Copy `version.dll` and `DDGUltrawide.ini` into `<densha 5.80.02 root>\TG4AC\Binaries\Win64`
-   (`LICENSE` and `THIRD_PARTY_NOTICES.txt` can go along with them).
+1. Copy `version.dll` and `DDGUltrawide.ini` into `<densha 5.80.02 root>\TG4AC\Binaries\Win64`.
 2. TeknoParrot's resolution and windowed settings don't matter: the DLL makes
    the game render in a 3840x2160 window regardless (`[Game]` in the ini).
 3. By default the output fills your main monitor at its resolution; set
@@ -114,4 +114,5 @@ Delete `version.dll`, `DDGUltrawide.ini` and `DDGUltrawide.log`.
 
 DDGUltrawide is under the MIT License (`LICENSE`). Third-party code is under
 its own license: MinHook (`third_party\minhook\LICENSE.txt`, BSD 2-clause).
-When sharing a build, include `LICENSE` and `THIRD_PARTY_NOTICES.txt` with it.
+Its notice is reproduced at the end of `DDGUltrawide.ini`, so it goes along
+with every build; keep it there when sharing one.
