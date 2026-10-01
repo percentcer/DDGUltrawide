@@ -40,5 +40,11 @@ ID3D11ShaderResourceView* CabinetLightReflections();
 bool CabinetLightHood(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, int width, int height,
                       int offset, bool perspective);
 
+// With perspective: draws the screw heads again over the warped view (target,
+// the output, width x height; the canvas offset to its right by offset), traced
+// from the camera at their true size, so they're as sharp at the window's edges
+// as in the middle. Needs CabinetLightReflect first. Changes the pipeline state.
+bool CabinetLightScrews(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, int width, int height, int offset);
+
 // Rebuilds the cabinet on the next render, after a setting it's built from changed.
 void CabinetLightInvalidate();

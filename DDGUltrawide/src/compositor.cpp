@@ -857,6 +857,7 @@ float4 PSPanel(VSOut i) : SV_Target
             ID3D11ShaderResourceView* noSRVs[3] = {};
             g_ctx->PSSetShaderResources(0, 3, noSRVs);
             // The hood, seen from the camera, over the warped view
+            if (acrylic) CabinetLightScrews(g_ctx, o.rtv, o.w, o.h, offset);
             if (acrylic) CabinetLightHood(g_ctx, o.rtv, o.w, o.h, offset, true);
 
             // The touch panel, tilted with the hood's front, over it

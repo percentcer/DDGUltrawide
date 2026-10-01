@@ -172,6 +172,45 @@ void ButtonHead(float l, out float h, out float dh)
     dh = -0.92 * k / q / (1 - TOP);
 }
 
+// A fastener's head at d (from its middle, in radii): the button head's
+// surface, and a tamper-proof Torx recess in it: a six-lobed star over half the
+// head across, turned however it was driven in (turn), with a pin standing in
+// its middle. Its walls, just inside its edge, face in and catch the light (a
+// bright rim around it, as in photos); its floor is dark. The normal is in the
+// surface's own axes (slope: head height over radius); aa is a pixel in radii.
+// Returns the height (of the head's) and how much is recess floor.
+float HeadSurface(float2 d, float slope, float turn, float aa, out float3 n)
+{
+    float l = length(d);
+    float2 dir = l > 1e-4 ? d / l : 0;
+    float h, dh;
+    ButtonHead(l, h, dh);
+    n = normalize(float3(dir * -dh * slope, 1));
+    float star = 0.33 + 0.08 * cos(6 * (atan2(d.y, d.x) + turn));
+    float recess = saturate((star - l) / aa + 0.5);
+    float wall = recess * saturate((l - (star - max(0.08, aa))) / aa + 0.5);
+    float pin = saturate((0.13 - l) / aa + 0.5);
+    float floor_ = saturate(recess - wall) * (1 - pin);
+    n = normalize(lerp(n, float3(dir * 0.3, 1), recess - wall));   // the pin's top, and the recess's floor: flat
+    n = normalize(lerp(n, float3(-dir, 1), wall));
+    return h - 0.5 * (floor_ + wall * 0.5);
+}
+
+float HeadFloor(float2 d, float turn, float aa)
+{
+    float l = length(d);
+    float star = 0.33 + 0.08 * cos(6 * (atan2(d.y, d.x) + turn));
+    float recess = saturate((star - l) / aa + 0.5);
+    float wall = recess * saturate((l - (star - max(0.08, aa))) / aa + 0.5);
+    float pin = saturate((0.13 - l) / aa + 0.5);
+    return saturate(recess - wall) * (1 - pin);
+}
+
+float HeadTurn(float2 canvasCenter)
+{
+    return frac(sin(dot(canvasCenter, float2(12.9898, 78.233))) * 43758.5453) * 6.2832;
+}
+
 // ---- G-buffer: one shape per draw ----
 float4 VSShape(uint id : SV_VertexID) : SV_Position
 {
@@ -199,30 +238,12 @@ GBuffer PSShape(float4 pos : SV_Position)
     float roughness = sMat.x;
     if (sParams.w > 1.5)
     {
-        // Dome: a fastener's button head...
+        // Dome: a fastener's head (HeadSurface)
         float2 d = (p - sRect.xy) / sRect.z;
-        float l = length(d);
-        cover = saturate((1 - l) * sRect.z + 0.5);
-        float2 dir = l > 1e-4 ? d / l : 0;
-        float h, dh;
-        ButtonHead(l, h, dh);
-        n = normalize(float3(dir * -dh * sParams.z / (sRect.z / sMat.z), 1));
-        z += sParams.z * h;
-
-        // ...and a tamper-proof Torx recess in it: a six-lobed star over half
-        // the head across, turned however it was driven in, with a pin standing
-        // in its middle. Its walls, just inside its edge, face in and catch the
-        // light (a bright rim around it, as in photos); its floor is dark.
-        float turn = frac(sin(dot(sRect.xy, float2(12.9898, 78.233))) * 43758.5453) * 6.2832;
-        float star = 0.33 + 0.08 * cos(6 * (atan2(d.y, d.x) + turn));
-        float aa = 1 / sRect.z;                         // a pixel, in radii
-        float recess = saturate((star - l) / aa + 0.5);
-        float wall = recess * saturate((l - (star - max(0.08, aa))) / aa + 0.5);
-        float pin = saturate((0.13 - l) / aa + 0.5);
-        float floor_ = saturate(recess - wall) * (1 - pin);
-        n = normalize(lerp(n, float3(dir * 0.3, 1), recess - wall));   // the pin's top, and the recess's floor: flat
-        n = normalize(lerp(n, float3(-dir, 1), wall));
-        z -= sParams.z * 0.5 * (floor_ + wall * 0.5);
+        cover = saturate((1 - length(d)) * sRect.z + 0.5);
+        float turn = HeadTurn(sRect.xy), aa = 1 / sRect.z;   // (a pixel, in radii)
+        z += sParams.z * HeadSurface(d, sParams.z / (sRect.z / sMat.z), turn, aa, n);
+        float floor_ = HeadFloor(d, turn, aa);
         albedo *= 1 - 0.75 * floor_;                    // the floor: deep, and in its own shadow
         roughness = lerp(roughness, 0.7, floor_);
     }
@@ -994,6 +1015,69 @@ float4 PSChrome(float4 pos : SV_Position) : SV_Target
 
 )"
 R"(
+// ---- 7. (with perspective) The screw heads again, over the warped view, in
+// it: each pixel's camera ray, at 3 x 3 points across it, traced to the head
+// (on its surface's plane, then onto the head's curve), and the head shaded
+// there as in PSChrome. Drawn at its true size, so it's as sharp at the
+// window's edges (where the warp magnifies the flat drawing) as in the middle.
+// sRect: its square in the output; sParams: its middle in the canvas (px),
+// radius (px, in the canvas), base height (inches); sAlbedo: color, head height
+// (inches); sTarget.z: the canvas's offset. ----
+float4 PSScrew(float4 pos : SV_Position) : SV_Target
+{
+    // Its base on the face's surface, as the warp sees the whole flat drawing
+    // (the frames it sits on too), so it lines up with them; only the head's
+    // own height stands off it
+    float3 ex, ez;
+    float3 C = Place(sParams.xy, 0, ex, ez);
+    float3 ey = float3(0, 1, 0);
+    float R = sParams.z / view.z, H = sAlbedo.w;                         // inches
+    float turn = HeadTurn(sParams.xy);
+    float aa = 0.5 / max(sParams.z * eye.z / max(eye.z - C.z, 1), 1);   // a sample's width, in radii (about)
+    float3 sum = 0;
+    float hits = 0;
+    [loop] for (int k = 0; k < 9; ++k)
+    {
+        float2 px = pos.xy + (float2(k % 3, k / 3) - 1) / 3;
+        float2 f = (float2(px.x + sTarget.z, px.y) - origin.xy) / view.z;
+        float3 r = normalize(float3(f, 0) - eye.xyz);
+        float denom = dot(r, ez);
+        if (denom > -1e-4) continue;
+        // Onto the plane at the head's middle height, then onto its curve
+        float hz = 0.7 * H, l = 2;
+        float2 d = 0;
+        float3 X = 0;
+        [unroll] for (int it = 0; it < 3; ++it)
+        {
+            float t = dot(C + ez * hz - eye.xyz, ez) / denom;
+            X = eye.xyz + r * t;
+            d = float2(dot(X - C, ex), dot(X - C, ey)) / R;
+            l = length(d);
+            float h, dh;
+            ButtonHead(min(l, 1), h, dh);
+            hz = H * h;
+        }
+        if (l >= 1) continue;
+        float3 n;
+        HeadSurface(d, H / R, turn, aa, n);
+        float floor_ = HeadFloor(d, turn, aa);
+        float3 albedo = sAlbedo.rgb * (1 - 0.75 * floor_);
+        float3 N = normalize(ex * n.x + ey * n.y + ez * n.z);
+        float3 v = -r;
+        float c = saturate(dot(N, v));
+        float3 F = albedo + (1 - albedo) * pow(1 - c, 5);
+        float3 rr = 2 * c * N - v;
+        sum += F * (Seen(X + N * 0.05, rr) + light.y * 2.5 * pow(saturate(dot(rr, OVERHEAD)), 64));
+        hits += 1;
+    }
+    if (hits <= 0) discard;
+    float3 L = sum / hits * light.z;
+    L = L < 0.8 ? L : 0.8 + 0.2 * (1 - exp(-(L - 0.8) / 0.2));
+    return float4(LinearToSrgb(saturate(L)), hits / 9);
+}
+
+)"
+R"(
 // ---- 8. The hood: each pixel's view (from the camera, or straight on) traced
 // to it; the cabinet as drawn (t0) is what it reflects. Where it misses, and
 // where the touch panel is (it sits in the hood's opening), nothing's drawn. ----
@@ -1139,6 +1223,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     ID3D11PixelShader* g_psHood = nullptr;
     ID3D11PixelShader* g_psChrome = nullptr;
     ID3D11PixelShader* g_psAO = nullptr;
+    ID3D11PixelShader* g_psScrew = nullptr;
     ID3D11Buffer* g_shapeCB = nullptr;
     ID3D11Buffer* g_sceneCB = nullptr;
     ID3D11BlendState* g_blendCover = nullptr;
@@ -1156,6 +1241,9 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     constexpr int kMap = 32, kMapFaces = 7; // the booth map (as in the shader)
     std::vector<CabinetAcrylic> g_acrylics;
     std::vector<CabinetAcrylic> g_screws;   // the screw heads (their bounds; z unused)
+    struct ScrewHead { float x, y, r, z, height, albedo[3]; };   // canvas px, px; inches; linear
+    std::vector<ScrewHead> g_heads;         // ...and as they are, for drawing in perspective
+    float g_originX = 0, g_originY = 0, g_pxPerInch = 1, g_cornerIn = 0, g_faceAngle = 0, g_cameraIn = 0;
     float g_hoodTopPx = 0;                  // the hood's top where it meets the wall, in the canvas
     constexpr int kBounces = 2;             // patch-to-patch bounces after the direct light
     int g_outW = 0, g_w = 0, g_h = 0, g_offset = 0;
@@ -1272,6 +1360,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         g_boothMap.Release();
         g_acrylics.clear();
         g_screws.clear();
+        g_heads.clear();
 
         CabinetScene scene;
         if (!GetCabinetScene(outW, h, scene)) return;
@@ -1385,7 +1474,13 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         g_acrylics = scene.acrylics;
         for (const CabinetShape& sh : scene.shapes)
             if (sh.kind == CabinetShape::Dome)
+            {
                 g_screws.push_back({ sh.x0 - sh.x1 - 1, sh.y0 - sh.x1 - 1, sh.x0 + sh.x1 + 1, sh.y0 + sh.x1 + 1, 0 });
+                g_heads.push_back({ sh.x0, sh.y0, sh.x1, sh.z0, sh.edge,
+                                    { ToLinear(sh.albedo[0]), ToLinear(sh.albedo[1]), ToLinear(sh.albedo[2]) } });
+            }
+        g_originX = scene.originX; g_originY = scene.originY; g_pxPerInch = scene.pxPerInch;
+        g_cornerIn = scene.cornerIn; g_faceAngle = scene.faceAngle; g_cameraIn = scene.eye[2];
         ctx->UpdateSubresource(g_sceneCB, 0, nullptr, sc, 0, 0);
         delete sc;
 
@@ -1475,7 +1570,7 @@ bool CabinetLightInit(ID3D11Device* dev)
     const bool ok = CreateVS("VSFull", &g_vsFull) && CreateVS("VSShape", &g_vsShape)
         && CreatePS("PSShape", &g_psShape) && CreatePS("PSCells", &g_psCells) && CreatePS("PSPatches", &g_psPatches) && CreatePS("PSBounce", &g_psBounce)
         && CreatePS("PSCube", &g_psCube) && CreatePS("PSGloss", &g_psGloss) && CreatePS("PSShade", &g_psShade)
-        && CreatePS("PSBoothMap", &g_psBoothMap) && CreatePS("PSAcrylic", &g_psAcrylic) && CreatePS("PSHood", &g_psHood) && CreatePS("PSChrome", &g_psChrome) && CreatePS("PSAO", &g_psAO)
+        && CreatePS("PSBoothMap", &g_psBoothMap) && CreatePS("PSAcrylic", &g_psAcrylic) && CreatePS("PSHood", &g_psHood) && CreatePS("PSChrome", &g_psChrome) && CreatePS("PSAO", &g_psAO) && CreatePS("PSScrew", &g_psScrew)
         && SUCCEEDED(dev->CreateBuffer(&sb, nullptr, &g_shapeCB))
         && SUCCEEDED(dev->CreateBuffer(&cb, nullptr, &g_sceneCB))
         && SUCCEEDED(dev->CreateBlendState(&bc, &g_blendCover))
@@ -1656,11 +1751,17 @@ bool CabinetLightReflect(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* targe
         for (const CabinetAcrylic& a : g_acrylics) draw(a);
     g_sheetsDrawn = sheets;
 
-    // The chrome screw heads, over it, blended in by how much of each pixel they cover
-    ctx->OMSetRenderTargets(1, &target, nullptr);
-    ctx->PSSetShader(g_psChrome, nullptr, 0);
-    ctx->OMSetBlendState(g_blendCover, nullptr, 0xFFFFFFFF);
-    for (const CabinetAcrylic& a : g_screws) draw(a);
+    // The chrome screw heads, over it, blended in by how much of each pixel they
+    // cover. Only in the flat view: with perspective (where the sheets are
+    // drawn), CabinetLightScrews draws them over the warped view instead, and
+    // they'd be covered.
+    if (!sheets)
+    {
+        ctx->OMSetRenderTargets(1, &target, nullptr);
+        ctx->PSSetShader(g_psChrome, nullptr, 0);
+        ctx->OMSetBlendState(g_blendCover, nullptr, 0xFFFFFFFF);
+        for (const CabinetAcrylic& a : g_screws) draw(a);
+    }
     UnbindSRVs(ctx);
     return true;
 }
@@ -1699,4 +1800,49 @@ bool CabinetLightHood(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, 
 ID3D11ShaderResourceView* CabinetLightReflections()
 {
     return g_enabled && g_sheetsDrawn && !g_acrylics.empty() ? g_reflections.srv : nullptr;
+}
+
+bool CabinetLightScrews(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* target, int width, int height, int offset)
+{
+    if (!g_psScrew || !g_enabled || !target || !g_under.srv || g_heads.empty() || g_cameraIn <= 0) return false;
+    CommonState(ctx);
+    UnbindSRVs(ctx);
+    ctx->OMSetBlendState(g_blendCover, nullptr, 0xFFFFFFFF);
+    ctx->OMSetRenderTargets(1, &target, nullptr);
+    Viewport(ctx, width, height);
+    ctx->VSSetShader(g_vsShape, nullptr, 0);
+    ctx->PSSetShader(g_psScrew, nullptr, 0);
+    ctx->VSSetConstantBuffers(0, 1, &g_shapeCB);
+    ctx->PSSetConstantBuffers(0, 1, &g_shapeCB);
+    ctx->PSSetConstantBuffers(1, 1, &g_sceneCB);
+    ID3D11ShaderResourceView* in[2] = { g_under.srv, g_boothMap.srv };
+    ctx->PSSetShaderResources(0, 2, in);
+    const float sa = std::sin(g_faceAngle), ca = std::cos(g_faceAngle), Z = g_cameraIn;
+    for (const ScrewHead& hd : g_heads)
+    {
+        // Where it is in 3D (as the shader's Place), and where that shows
+        const float fx = (hd.x - g_originX) / g_pxPerInch, fy = (hd.y - g_originY) / g_pxPerInch;
+        float qx = fx, qz = 0;                      // (its base on the face's surface, as in the shader)
+        const float along = std::fabs(fx) - g_cornerIn;
+        if (along > 0)
+        {
+            const float sgn = fx < 0 ? -1.0f : 1.0f;
+            qx = sgn * g_cornerIn + sgn * ca * along;
+            qz = sa * along;
+        }
+        const float k = Z / std::fmax(Z - qz, 1.0f);
+        const float cx = g_originX - offset + qx * k * g_pxPerInch, cy = g_originY + fy * k * g_pxPerInch;
+        const float r = hd.r * k * 1.3f + 2;
+        const ShapeConstants c = {
+            { std::floor(cx - r), std::floor(cy - r), std::ceil(cx + r), std::ceil(cy + r) },
+            { hd.x, hd.y, hd.r, hd.z }, { hd.albedo[0], hd.albedo[1], hd.albedo[2], hd.height }, { 0, 0, 0, 0 },
+            { static_cast<float>(width), static_cast<float>(height), static_cast<float>(offset), 0 } };
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (FAILED(ctx->Map(g_shapeCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
+        memcpy(m.pData, &c, sizeof(c));
+        ctx->Unmap(g_shapeCB, 0);
+        ctx->Draw(4, 0);
+    }
+    UnbindSRVs(ctx);
+    return true;
 }
