@@ -12,7 +12,7 @@ struct Rect
 struct Config
 {
     // [Output] the window the screens are drawn into
-    int outW = 5120, outH = 1440;       // size in pixels
+    int outW = 0, outH = 0;             // size in pixels (0 = the monitor's: see ResolveOutput)
     int outX = 0, outY = 0;             // position on the desktop
     bool vsync = true;
     bool pixelSnap = true;              // snap screen edges to whole pixels
@@ -67,6 +67,11 @@ extern Config g_cfg;
 
 // Loads the ini; missing values keep their defaults (the 3+1 layout at 5120x1440).
 void LoadConfig(const std::wstring& iniPath);
+
+// Settles the output window's size and position: with [Output] Width or
+// Height 0, the monitor's (the one at X, Y). Not from DllMain (it asks
+// Windows about monitors); before anything uses g_cfg.outW etc.
+void ResolveOutput();
 
 // The screen that is the touch panel (bottom-right of the cabinet's 2x2 frame).
 constexpr int kTouchPanelScreen = 3;

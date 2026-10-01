@@ -135,6 +135,44 @@ namespace
     }
 }
 
+void ResolveOutput()
+{
+    // Width or Height 0: the monitor at X, Y (or else the main one), all of it
+    if (g_cfg.outW <= 0 || g_cfg.outH <= 0)
+    {
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        const POINT at = { g_cfg.outX, g_cfg.outY };
+        if (GetMonitorInfoW(MonitorFromPoint(at, MONITOR_DEFAULTTOPRIMARY), &mi))
+        {
+            const RECT& r = mi.rcMonitor;
+            if (g_cfg.outW <= 0) g_cfg.outW = r.right - r.left;
+            if (g_cfg.outH <= 0) g_cfg.outH = r.bottom - r.top;
+            g_cfg.outX = r.left;
+            g_cfg.outY = r.top;
+            LOG("Output size from the monitor at %ld,%ld:", at.x, at.y);
+        }
+        else
+        {
+            g_cfg.outW = g_cfg.outW > 0 ? g_cfg.outW : 1920;
+            g_cfg.outH = g_cfg.outH > 0 ? g_cfg.outH : 1080;
+            LOG("No monitor found at %ld,%ld; output size %dx%d", at.x, at.y, g_cfg.outW, g_cfg.outH);
+        }
+    }
+    LOG("Output: %dx%d at %d,%d, vsync %d, pixel snap %d, game window mode %d",
+        g_cfg.outW, g_cfg.outH, g_cfg.outX, g_cfg.outY, g_cfg.vsync ? 1 : 0,
+        g_cfg.pixelSnap ? 1 : 0, g_cfg.gameWindowMode);
+    if (g_cfg.arcadeLayout)
+    {
+        LOG("Arcade layout, %.2f\" gaps, panel scaling %.2f, panel overlap %s, cabinet %s (ignores [Layout] P0..P3 and [Source]):",
+            g_cfg.arcadeGap, g_cfg.panelScaling, g_cfg.allowPanelOverlap ? "allowed" : "off",
+            g_cfg.arcadeCabinet ? "on" : "off");
+        for (const Placement& p : Placements(kMainWindow, g_cfg.outW, g_cfg.outH))
+            LOG("  Screen %d: %.0fx%.0f at %.0f,%.0f", p.screen, p.dest.sizeX * g_cfg.outW,
+                p.dest.sizeY * g_cfg.outH, p.dest.originX * g_cfg.outW, p.dest.originY * g_cfg.outH);
+    }
+}
+
 void LoadConfig(const std::wstring& ini)
 {
     // Defaults: the cabinet's 2x2 frame drawn as three screens across the top
@@ -205,23 +243,11 @@ void LoadConfig(const std::wstring& ini)
     g_cfg.renderH = ReadInt(ini, L"Game", L"RenderHeight", g_cfg.renderH);
     g_cfg.extraCommandLine = ReadString(ini, L"Game", L"ExtraCommandLine", L"");
 
-    LOG("Output: %dx%d at %d,%d, vsync %d, pixel snap %d, game window mode %d",
-        g_cfg.outW, g_cfg.outH, g_cfg.outX, g_cfg.outY, g_cfg.vsync ? 1 : 0,
-        g_cfg.pixelSnap ? 1 : 0, g_cfg.gameWindowMode);
     if (g_cfg.renderW > 0 && g_cfg.renderH > 0)
         LOG("Game render size: %dx%d", g_cfg.renderW, g_cfg.renderH);
     else
         LOG("Game render size: left to the game");
-    if (g_cfg.arcadeLayout)
-    {
-        LOG("Arcade layout, %.2f\" gaps, panel scaling %.2f, panel overlap %s, cabinet %s (ignores [Layout] P0..P3 and [Source]):",
-            g_cfg.arcadeGap, g_cfg.panelScaling, g_cfg.allowPanelOverlap ? "allowed" : "off",
-            g_cfg.arcadeCabinet ? "on" : "off");
-        for (const Placement& p : Placements(kMainWindow, g_cfg.outW, g_cfg.outH))
-            LOG("  Screen %d: %.0fx%.0f at %.0f,%.0f", p.screen, p.dest.sizeX * g_cfg.outW,
-                p.dest.sizeY * g_cfg.outH, p.dest.originX * g_cfg.outW, p.dest.originY * g_cfg.outH);
-    }
-    else
+    if (!g_cfg.arcadeLayout)
     {
         LogRects("P", g_cfg.dests);
         LogRects("S", g_cfg.sources);

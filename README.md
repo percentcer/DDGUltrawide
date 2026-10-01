@@ -39,7 +39,8 @@ bytecode, so nothing is compiled or written to disk at runtime.
 1. Copy `version.dll` and `DDGUltrawide.ini` into `<densha 5.80.02 root>\TG4AC\Binaries\Win64`.
 2. TeknoParrot's resolution and windowed settings don't matter: the DLL makes
    the game render in a 3840x2160 window regardless (`[Game]` in the ini).
-3. Adjust `[Output]` in the ini if your monitor isn't 5120x1440.
+3. By default the output fills your main monitor at its resolution; set
+   `[Output]` in the ini to use another monitor or a different size.
 
 A log is written to `DDGUltrawide.log` next to the DLL to help with troubleshooting.
 
