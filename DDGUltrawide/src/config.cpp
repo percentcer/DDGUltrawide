@@ -159,9 +159,8 @@ void ResolveOutput()
             LOG("No monitor found at %ld,%ld; output size %dx%d", at.x, at.y, g_cfg.outW, g_cfg.outH);
         }
     }
-    LOG("Output: %dx%d at %d,%d, vsync %d, pixel snap %d, game window mode %d",
-        g_cfg.outW, g_cfg.outH, g_cfg.outX, g_cfg.outY, g_cfg.vsync ? 1 : 0,
-        g_cfg.pixelSnap ? 1 : 0, g_cfg.gameWindowMode);
+    LOG("Output: %dx%d at %d,%d, vsync %d, pixel snap %d",
+        g_cfg.outW, g_cfg.outH, g_cfg.outX, g_cfg.outY, g_cfg.vsync ? 1 : 0, g_cfg.pixelSnap ? 1 : 0);
     if (g_cfg.arcadeLayout)
     {
         LOG("Arcade layout, %.2f\" gaps, panel scaling %.2f, panel overlap %s, cabinet %s (ignores [Layout] P0..P3 and [Source]):",
@@ -195,7 +194,6 @@ void LoadConfig(const std::wstring& ini)
     g_cfg.outY = ReadInt(ini, L"Output", L"Y", g_cfg.outY);
     g_cfg.vsync = ReadInt(ini, L"Output", L"VSync", 1) != 0;
     g_cfg.pixelSnap = ReadInt(ini, L"Output", L"PixelSnap", 1) != 0;
-    g_cfg.gameWindowMode = ReadInt(ini, L"Output", L"GameWindow", 0);
 
     g_cfg.arcadeLayout = ReadInt(ini, L"Layout", L"ArcadeLayout", 1) != 0;
     float gap;
@@ -230,14 +228,9 @@ void LoadConfig(const std::wstring& ini)
     ReadRect(ini, L"TouchPanelWindow", L"Layout", g_cfg.panelDest);
     ReadRect(ini, L"TouchPanelWindow", L"Source", g_cfg.panelSource);
 
+    g_cfg.hotkeys = ReadInt(ini, L"Hotkeys", L"Enabled", 0) != 0;
     g_cfg.touchEnabled = ReadInt(ini, L"Touch", L"Enabled", 1) != 0;
     g_cfg.hideCursor = ReadInt(ini, L"Touch", L"HideCursor", 0) != 0;
-    g_cfg.touchScreens.clear();
-    for (const std::wstring& part : SplitCommas(ReadString(ini, L"Touch", L"Screens", L"3")))
-    {
-        float v;
-        if (ParseNumber(part, v)) g_cfg.touchScreens.push_back(static_cast<int>(v));
-    }
 
     g_cfg.renderW = ReadInt(ini, L"Game", L"RenderWidth", g_cfg.renderW);
     g_cfg.renderH = ReadInt(ini, L"Game", L"RenderHeight", g_cfg.renderH);

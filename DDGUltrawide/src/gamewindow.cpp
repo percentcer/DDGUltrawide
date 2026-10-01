@@ -42,15 +42,13 @@ namespace
     }
 
     // Where the game window's client area goes (desktop pixels): with the
-    // touch screens' part of the frame at the top left of the output that
-    // shows them (the panel's own window, or the main one)
+    // touch panel's part of the frame at the top left of the output that
+    // shows it (the panel's own window, or the main one)
     POINT ClientOrigin()
     {
-        float x0 = 1, y0 = 1;
+        float x0 = 0.5f, y0 = 0.5f;                                      // (the touch panel's quadrant)
         for (const Placement& p : Placements(kMainWindow, g_cfg.outW, g_cfg.outH))
-            for (int r : g_cfg.touchScreens)
-                if (p.screen == r) { x0 = std::fmin(x0, p.source.originX); y0 = std::fmin(y0, p.source.originY); }
-        if (x0 > 0.999f && y0 > 0.999f) { x0 = 0.5f; y0 = 0.5f; }   // (the touch panel's quadrant)
+            if (p.screen == kTouchPanelScreen) { x0 = p.source.originX; y0 = p.source.originY; }
         const bool own = g_cfg.panelWindow && g_cfg.panelW > 0 && g_cfg.panelH > 0;
         const int dx = own ? g_cfg.panelX : g_cfg.outX, dy = own ? g_cfg.panelY : g_cfg.outY;
         return { dx - static_cast<LONG>(x0 * g_cfg.renderW), dy - static_cast<LONG>(y0 * g_cfg.renderH) };

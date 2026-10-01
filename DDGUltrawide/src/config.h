@@ -16,7 +16,6 @@ struct Config
     int outX = 0, outY = 0;             // position on the desktop
     bool vsync = true;
     bool pixelSnap = true;              // snap screen edges to whole pixels
-    int gameWindowMode = 0;             // 0 = keep ours above it (owned), 1 = move it off-screen
 
     // [Layout] P0..: where each screen is drawn in the output
     std::vector<Rect> dests;
@@ -28,6 +27,7 @@ struct Config
     float panelScaling = 0.75f;         // touch panel size, relative to a third of the output's height
     bool arcadeCabinet = true;          // draw the cabinet (wall, screen frames, console) around the screens
     float arcadeCameraMm = 2250.0f;     // perspective camera in front of the center screen (0 = flat)
+    bool hotkeys = false;               // Ctrl+Alt+arrows adjust the perspective while playing
     float arcadeFovDeg = 0.0f;          // its horizontal field of view (0 = the center screen fills the window)
     float cabinetColor[3] = { 0xBA / 255.0f, 0xB3 / 255.0f, 0xA5 / 255.0f };   // the cabinet's beige-gray
     float cabinetScreenNits = 1000.0f;  // the screens' white, cd/m^2
@@ -52,7 +52,6 @@ struct Config
 
     // [Touch]
     bool touchEnabled = true;
-    std::vector<int> touchScreens{ 3 }; // which screens accept clicks (index into Layout/Source)
     bool hideCursor = false;            // hide the cursor over the output window
 
     // [Game]

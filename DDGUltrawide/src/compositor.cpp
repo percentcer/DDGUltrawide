@@ -105,6 +105,7 @@ namespace
 
     void PollHotkeys()
     {
+        if (!g_cfg.hotkeys) return;
         DWORD pid = 0;
         GetWindowThreadProcessId(GetForegroundWindow(), &pid);
         const bool modifiers = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000);
@@ -211,21 +212,13 @@ namespace
                 if (iconSmall || iconBig) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(iconSmall ? iconSmall : iconBig));
                 LOG("Output window stands in for the game in Alt+Tab and the taskbar (\"%ls\")", title);
             }
-            if (g_cfg.gameWindowMode == 0)
-            {
-                // Owned windows always stay above their owner in the z-order.
-                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(game));
-                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                LOG("%s window now owned by the game window %p", OutputName(hwnd), game);
-                if (hwnd == g_outs[kMainWindow].hwnd.load()) PlaceGameWindow(game);
-            }
-            else if (hwnd == g_outs[kMainWindow].hwnd.load())
-            {
-                // Move the game window completely off the desktop.
-                SetWindowPos(game, nullptr, -32000, -32000, 0, 0,
-                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-                LOG("Moved the game window %p off-screen", game);
-            }
+            // Owned windows always stay above their owner in the z-order. (The
+            // game window stays partly on the desktop, behind ours: the game
+            // ignores a cursor off the desktop while driving.)
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(game));
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            LOG("%s window now owned by the game window %p", OutputName(hwnd), game);
+            if (hwnd == g_outs[kMainWindow].hwnd.load()) PlaceGameWindow(game);
             return 0;
         }
         }

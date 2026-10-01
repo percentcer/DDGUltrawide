@@ -18,6 +18,7 @@
 #include "log.h"
 #include "proxy.h"
 #include "touch.h"
+#include "version.h"
 
 #include <windows.h>
 #include <MinHook.h>
@@ -51,7 +52,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
     DisableThreadLibraryCalls(module);
     const std::wstring dir = ModuleDir(module);
     logx::Init(dir + L"DDGUltrawide.log");
-    LOG("DDGUltrawide loaded into %p", GetModuleHandleW(nullptr));
+    LOG("DDGUltrawide " DDGU_VERSION_STRING " loaded into %p", GetModuleHandleW(nullptr));
 
     // Must happen before the game calls any version.dll function.
     if (!LoadOriginalVersionDll())

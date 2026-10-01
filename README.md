@@ -36,7 +36,8 @@ bytecode, so nothing is compiled or written to disk at runtime.
 
 ## Install
 
-1. Copy `version.dll` and `DDGUltrawide.ini` into `<densha 5.80.02 root>\TG4AC\Binaries\Win64`.
+1. Copy `version.dll` and `DDGUltrawide.ini` into `<densha 5.80.02 root>\TG4AC\Binaries\Win64`
+   (`LICENSE` and `THIRD_PARTY_NOTICES.txt` can go along with them).
 2. TeknoParrot's resolution and windowed settings don't matter: the DLL makes
    the game render in a 3840x2160 window regardless (`[Game]` in the ini).
 3. By default the output fills your main monitor at its resolution; set
@@ -44,12 +45,27 @@ bytecode, so nothing is compiled or written to disk at runtime.
 
 A log is written to `DDGUltrawide.log` next to the DLL to help with troubleshooting.
 
+### Antivirus warnings
+
+Some antivirus software may flag `version.dll`. It's a false positive: the DLL
+works the way game mods do, which heuristics often mistake for malware. It
+stands in for a Windows DLL so that the game loads it, hooks a few of the
+game's functions (presenting frames, the cursor, window creation and its
+command line), and redraws the game's screens. It doesn't download, install or
+change anything outside the game, and only writes its own log. The source is
+all here to read and build yourself.
+
+If it's quarantined, restore it and add an exclusion for the game's
+`TG4AC\Binaries\Win64` folder (with Microsoft Defender: Windows Security >
+Virus & threat protection > Manage settings > Exclusions). With Defender, you
+can also report the false positive at https://www.microsoft.com/wdsi/filesubmission.
+
 ## Configuration
 
 See the comments in `DDGUltrawide.ini`. In short:
 
-- `[Output]`: size and position of the output window, vsync, pixel snapping, and
-  how to keep the game's own window out of sight.
+- `[Output]`: size and position of the output window (by default, the whole
+  main monitor), vsync, and pixel snapping.
 - `[Layout]`: by default (`ArcadeLayout=1`) the screens are sized like the
   cabinet (smaller 43" side screens beside the 55" center, flush along the
   bottom, with an `ArcadeGap` between them, 2" by default), computed
@@ -63,9 +79,8 @@ See the comments in `DDGUltrawide.ini`. In short:
   cabinets turned toward you in perspective (`ArcadeCameraDistance`, how far
   you stand from the center screen in mm, 2250 by default, 0 = flat; and
   `ArcadeFov`, the horizontal field of view in degrees, 0 = the center screen
-  fills the window, cutting off what doesn't fit; while playing, Ctrl+Alt+Up /
-  Down move you closer / farther and Ctrl+Alt+Left / Right narrow / widen the
-  view). `ArcadeTouchPanelScaling`
+  fills the window, cutting off what doesn't fit; with `[Hotkeys] Enabled=1`,
+  Ctrl+Alt+arrows adjust both while playing). `ArcadeTouchPanelScaling`
   (0.75 by default) sets the touch panel's size, trading it against the forward
   screens', and `ArcadeTouchPanelAllowOverlap=1` lets the screens use the full
   width by drawing the touch panel over the bottom edge of the center screen.
@@ -74,15 +89,18 @@ See the comments in `DDGUltrawide.ini`. In short:
 - `[TouchPanelWindow]`: shows the touch panel full screen on a separate monitor
   (e.g. a touchscreen) instead of in the main output. Pick the monitor by the
   number Windows shows for it, or place the window explicitly.
-- `[Touch]`: which screens accept clicks, and whether to hide the cursor.
+- `[Touch]`: whether clicks on the touch panel reach the game, and whether to
+  hide the cursor.
+- `[Hotkeys]`: Ctrl+Alt+arrows to adjust the perspective while playing (off by
+  default).
+- `[Game]`: the size the game renders at (3840x2160, the cabinet's), and extra
+  command line options.
 
 ### Using a separate touchscreen
 
 Set `Enabled=1` under `[TouchPanelWindow]`. If taps on the touchscreen move the
 cursor on the wrong monitor, tell Windows which display the touchscreen belongs
 to: Control Panel -> Tablet PC Settings -> Setup -> Touch input.
-- `[Game]`: the size the game renders at (3840x2160, the cabinet's), and extra
-  command line options.
 
 ## Uninstall
 
@@ -91,3 +109,9 @@ Delete `version.dll`, `DDGUltrawide.ini` and `DDGUltrawide.log`.
 ## Known Incompatibilities
 
 - PowerToys FancyZones needs an exclusion for `TG4AC-Win64-Shipping.exe` (by default it will force the base canvas to resize which breaks the compositor. DDGUltrawide will try to detect and fix this but... no promises)
+
+## License
+
+DDGUltrawide is under the MIT License (`LICENSE`). Third-party code is under
+its own license: MinHook (`third_party\minhook\LICENSE.txt`, BSD 2-clause).
+When sharing a build, include `LICENSE` and `THIRD_PARTY_NOTICES.txt` with it.

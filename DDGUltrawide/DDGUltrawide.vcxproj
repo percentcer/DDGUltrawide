@@ -109,8 +109,12 @@
     <None Include="src\shaders\compositor.hlsl" />
   </ItemGroup>
   <ItemGroup>
+    <ResourceCompile Include="src\version.rc" />
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="src\log.h" />
     <ClInclude Include="src\config.h" />
+    <ClInclude Include="src\version.h" />
     <ClInclude Include="src\cmdline.h" />
     <ClInclude Include="src\compositor.h" />
     <ClInclude Include="src\cabinetlight.h" />

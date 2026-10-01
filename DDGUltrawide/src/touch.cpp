@@ -32,11 +32,10 @@ namespace
     SetCursorPosFn g_origSetCursorPos = nullptr;
     bool g_loggedSetCursor = false;
 
+    // Only the touch panel takes touches (as on the cabinet)
     bool IsTouchRegion(int i)
     {
-        for (int r : g_cfg.touchScreens)
-            if (r == i) return true;
-        return false;
+        return i == kTouchPanelScreen;
     }
 
     int WindowIndex(HWND hwnd)
@@ -312,7 +311,7 @@ bool InstallTouchHooks()
     ok = ok && MH_CreateHookApi(L"user32", "SetCursorPos", reinterpret_cast<void*>(&Hook_SetCursorPos),
                                 reinterpret_cast<void**>(&g_origSetCursorPos)) == MH_OK;
     ok = ok && MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
-    LOG(ok ? "Touch hooks installed (%zu touch screens)" : "Touch hooks FAILED", g_cfg.touchScreens.size());
+    LOG(ok ? "Touch hooks installed" : "Touch hooks FAILED");
     return ok;
 }
 
