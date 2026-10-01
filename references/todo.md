@@ -1,15 +1,16 @@
 ## software
-- consider drawing the fasteners along the top panel
-- consider drawing the seam along the top panel
-- fix errant reflections from touch panel (side panels wouldn't actually see it)
 - figure out what to do with the touch panel when in arcade mode with external monitor (draw less of the console? keep it and duplicate?)
+- test with zuiki
+- use a pre-captured env map to provide more interesting reflections
 - performance pass, make sure we're not doing anything too crazy
 - cleanup pass, remove old unused code
 - disable hotkeys by default
-- use a pre-captured env map to provide more interesting reflections
+- consider drawing the fasteners along the top panel
+- consider drawing the seam along the top panel
+- fix errant reflections from touch panel (side panels wouldn't actually see it)
 - convert to using meshes? (big task)
-- TeknoParrot seems to ignore scroll wheel? why?
-- TeknoParrot forces game to EnableCheatKey=True, why?
+- ability to launch classics
+- compact cabinet mode?
 
 ## physical
 - measure actual thickness of acrylic

@@ -898,24 +898,40 @@ AcrylicOut PSAcrylic(float4 pos : SV_Position)
 // ---- 7. (continued) The chrome screw heads: mirrors, curved. What's under
 // them (t0), the booth map (t1), and the G-buffer (t2, gAlbedo, gGeo), drawn
 // over what's there by how much of each pixel is metal ----
-float4 PSChrome(float4 pos : SV_Position) : SV_Target
+// One sharp reflection off a screw head, at canvas point px (its surface
+// interpolated from the G-buffer between pixels)
+float3 ChromeAt(float2 px, float3 albedo)
 {
-    int3 ip = int3(pos.xy, 0);
-    float metal = t2.Load(ip).y;
-    if (metal < 0.01) discard;
-    float3 albedo = gAlbedo.Load(ip).rgb;
-    float4 geo = gGeo.Load(ip);
+    float4 geo = gGeo.SampleLevel(linearClamp, px / view.xy, 0);
     float2 nxy = geo.xy * 2 - 1;
     float3 n = float3(nxy, sqrt(saturate(1 - dot(nxy, nxy))));
     float3 ex, ez;
-    float3 P = Place(pos.xy, geo.z * 16, ex, ez);
+    float3 P = Place(px, geo.z * 16, ex, ez);
     float3 N = normalize(ex * n.x + float3(0, n.y, 0) + ez * n.z);    // from the surface's axes
     float3 v = normalize(eye.xyz - P);
     float c = saturate(dot(N, v));
     float3 F = albedo + (1 - albedo) * pow(1 - c, 5);                // metal: tinted by its color
     float3 r = 2 * c * N - v;
     // What it mirrors, and the arcade's ceiling lights: a sharp glint
-    float3 L = F * (Seen(P + N * 0.05, r) + light.y * 2.5 * pow(saturate(dot(r, OVERHEAD)), 64)) * light.z;
+    return F * (Seen(P + N * 0.05, r) + light.y * 2.5 * pow(saturate(dot(r, OVERHEAD)), 64));
+}
+
+float4 PSChrome(float4 pos : SV_Position) : SV_Target
+{
+    int3 ip = int3(pos.xy, 0);
+    float metal = t2.Load(ip).y;
+    if (metal < 0.01) discard;
+    float3 albedo = gAlbedo.Load(ip).rgb;
+
+    // A head is only a few pixels across, and its surface turns a lot across
+    // each one: its reflections are taken sharp, at 3 x 3 points across the
+    // pixel, and averaged, so a glint covering part of a pixel shows as part
+    // of it (rather than flickering on and off)
+    float3 L = 0;
+    [unroll] for (int j = 0; j < 3; ++j)
+        [unroll] for (int i = 0; i < 3; ++i)
+            L += ChromeAt(pos.xy + (float2(i, j) - 1) / 3, albedo);
+    L *= light.z / 9;
     L = L < 0.8 ? L : 0.8 + 0.2 * (1 - exp(-(L - 0.8) / 0.2));
     return float4(LinearToSrgb(saturate(L)), metal);
 }
