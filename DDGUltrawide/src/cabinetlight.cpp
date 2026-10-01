@@ -31,6 +31,10 @@
 //      itself (the screens and frames, as just drawn).
 //      The chrome screw heads are done the same way: each pixel's reflection
 //      off the head's curve, followed to what it hits.
+//   0. (Once, with the G-buffer) contact shadows: how much of the sky above
+//      each point of the cabinet nearby raised parts (frames, brackets, screws)
+//      block, from its heights. It darkens the light the point gets.
+//   (The hood also shadows the cabinet from each light, in 3 and 4.)
 //   8. The hood, last: each pixel's view is traced to the hood (a box reaching
 //      out under the center screen), which takes its own light from the booth
 //      map and glossily reflects the rest.
@@ -126,6 +130,7 @@ Texture2D<float4> gloss3 : register(t12);  // looking -y (up)
 Texture2D<float4> gloss4 : register(t13);  // looking +z (out, toward the player and the booth)
 Texture2D<float4> gAlbedo : register(t14);  // 7. (the chrome screws) the G-buffer's color
 Texture2D<float4> gGeo : register(t15);     // ...and its normals
+Texture2D<float4> gAO : register(t16);     // 0. contact shadows (1 = open)
 SamplerState linearClamp : register(s0);
 
 static const float GLOSS_POWER = 8;        // the gloss lobes: cos^8
@@ -324,6 +329,50 @@ float4 PSBounce(float4 pos : SV_Position) : SV_Target
     return float4(patchAlb[i].rgb * E / PI + patchAlb[i].w, 1);
 }
 
+// Whether the hood is between P and a light at S (0 if so). Most paths can't
+// reach it: both ends above its top
+float HoodHit(float3 P, float3 r, out float3 N);
+float HoodShadow(float3 P, float3 S)
+{
+    if (P.y < hood.y && S.y < hood.y) return 1;
+    float3 d = S - P;
+    float len = length(d), t;
+    float3 N;
+    t = HoodHit(P, d / len, N);
+    return t < len - 0.1 ? 0 : 1;
+}
+
+// ---- 0. Contact shadows, from the G-buffer's heights (t1) ----
+static const float AO_RADIUS = 1.5;      // inches around
+static const float AO_STRENGTH = 0.85;
+float AOHeight(float2 px)
+{
+    float4 g = t1.SampleLevel(linearClamp, px / view.xy, 0);
+    return g.z * 16 * g.w;
+}
+
+float4 PSAO(float4 pos : SV_Position) : SV_Target
+{
+    float h0 = AOHeight(pos.xy);
+    float occluded = 0;
+    [unroll] for (int d = 0; d < 8; ++d)
+    {
+        float a = d * PI / 4 + 0.39;
+        float2 dir = float2(cos(a), sin(a));
+        float best = 0;
+        [unroll] for (int s = 1; s <= 6; ++s)
+        {
+            float dist = AO_RADIUS * s / 6;                       // inches
+            float dh = AOHeight(pos.xy + dir * dist * view.z) - h0;
+            best = max(best, dh / sqrt(dh * dh + dist * dist) * (1 - dist / (AO_RADIUS * 1.15)));
+        }
+        occluded += best;
+    }
+    return float4(saturate(1 - AO_STRENGTH * occluded / 8).xxx, 1);
+}
+
+)"
+R"(
 // ---- 3. Ambient cube: light from cells (t0) and patches (t1), by direction ----
 struct Cube
 {
@@ -343,7 +392,8 @@ Cube PSCube(float4 pos : SV_Position)
     float3 w, e;
     for (int i = 0; i < (int)counts.x; ++i)
     {
-        e = FromSource(P, cellPos[i].xyz, cellNrm[i].xyz, cellPos[i].w, t0.Load(int3(i, 0, 0)).rgb, w);
+        e = FromSource(P, cellPos[i].xyz, cellNrm[i].xyz, cellPos[i].w, t0.Load(int3(i, 0, 0)).rgb, w)
+          * HoodShadow(P, cellPos[i].xyz);
         w = ToLocal(w, ex, ez);
         c0 += e * max(w.x, 0); c1 += e * max(-w.x, 0);
         c2 += e * max(w.y, 0); c3 += e * max(-w.y, 0);
@@ -351,7 +401,8 @@ Cube PSCube(float4 pos : SV_Position)
     }
     for (int j = 0; j < (int)counts.y; ++j)
     {
-        e = FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w);
+        e = FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w)
+          * HoodShadow(P, patchPos[j].xyz);
         w = ToLocal(w, ex, ez);
         c0 += e * max(w.x, 0); c1 += e * max(-w.x, 0);
         c2 += e * max(w.y, 0); c3 += e * max(-w.y, 0);
@@ -387,11 +438,13 @@ Gloss PSGloss(float4 pos : SV_Position)
     for (int i = 0; i < (int)counts.x + (int)counts.y; ++i)
     {
         if (i < (int)counts.x)
-            e = FromSource(P, cellPos[i].xyz, cellNrm[i].xyz, cellPos[i].w, t0.Load(int3(i, 0, 0)).rgb, w);
+            e = FromSource(P, cellPos[i].xyz, cellNrm[i].xyz, cellPos[i].w, t0.Load(int3(i, 0, 0)).rgb, w)
+              * HoodShadow(P, cellPos[i].xyz);
         else
         {
             int j = i - (int)counts.x;
-            e = FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w);
+            e = FromSource(P, patchPos[j].xyz, patchNrm[j].xyz, patchPos[j].w, t1.Load(int3(j, 0, 0)).rgb, w)
+              * HoodShadow(P, patchPos[j].xyz);
         }
         w = ToLocal(w, ex, ez);
         g0 += e * pow(max(w.x, 0), GLOSS_POWER); g1 += e * pow(max(-w.x, 0), GLOSS_POWER);
@@ -496,9 +549,10 @@ float4 PSShade(float4 pos : SV_Position) : SV_Target
 
     // Diffuse, less what's reflected; specular from the gloss lobes, blurring
     // toward the ambient cube as the surface gets rougher
-    float3 diffuse = albedo * (1 - mat.y) * (1 - F) * Irradiance(n, uv) / PI;
+    float ao = gAO.Load(ip).x;                          // contact shadows
+    float3 diffuse = albedo * (1 - mat.y) * (1 - F) * Irradiance(n, uv) / PI * ao;
     float3 env = lerp(Glossy(r, uv), Irradiance(r, uv) / PI, saturate(mat.x * 1.6 - 0.3));
-    float3 specular = F * lerp(env, wallSeen, intoWall);
+    float3 specular = F * lerp(env, wallSeen, intoWall) * lerp(1, ao, 0.6);
 
     // The arcade's ceiling lights, overhead and a little toward the player: a
     // highlight, crisp on chrome and broad and faint on satin paint
@@ -1082,6 +1136,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     ID3D11PixelShader* g_psAcrylic = nullptr;
     ID3D11PixelShader* g_psHood = nullptr;
     ID3D11PixelShader* g_psChrome = nullptr;
+    ID3D11PixelShader* g_psAO = nullptr;
     ID3D11Buffer* g_shapeCB = nullptr;
     ID3D11Buffer* g_sceneCB = nullptr;
     ID3D11BlendState* g_blendCover = nullptr;
@@ -1091,6 +1146,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
     ID3D11SamplerState* g_sampler = nullptr;
 
     Target g_gbuffer[3], g_cells, g_patches, g_patches2, g_cube[6], g_gloss[5];
+    Target g_ao;                            // 0. contact shadows
     Target g_boothMap;                      // 6. the booth's surfaces
     Target g_under;                         // 7. a copy of what's under the acrylic
     Target g_reflections;                   // 7. the acrylic's reflections alone
@@ -1158,8 +1214,8 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
 
     void UnbindSRVs(ID3D11DeviceContext* ctx)
     {
-        ID3D11ShaderResourceView* none[16] = {};
-        ctx->PSSetShaderResources(0, 16, none);
+        ID3D11ShaderResourceView* none[17] = {};
+        ctx->PSSetShaderResources(0, 17, none);
     }
 
     // Builds everything that only depends on the window size: the G-buffer, the
@@ -1177,6 +1233,7 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
         for (Target& t : g_gbuffer) t.Release();
         for (Target& t : g_cube) t.Release();
         for (Target& t : g_gloss) t.Release();
+        g_ao.Release();
         g_cells.Release();
         g_patches.Release();
         g_patches2.Release();
@@ -1327,6 +1384,19 @@ float4 PSHood(float4 pos : SV_Position) : SV_Target
             ctx->Unmap(g_shapeCB, 0);
             ctx->Draw(4, 0);
         }
+        // Contact shadows, from it
+        if (g_psAO && g_ao.Create(g_dev, w, h, DXGI_FORMAT_R8_UNORM))
+        {
+            UnbindSRVs(ctx);
+            ctx->OMSetRenderTargets(1, &g_ao.rtv, nullptr);
+            ctx->OMSetBlendState(g_blendOff, nullptr, 0xFFFFFFFF);
+            ctx->VSSetShader(g_vsFull, nullptr, 0);
+            ctx->PSSetShader(g_psAO, nullptr, 0);
+            ctx->PSSetConstantBuffers(1, 1, &g_sceneCB);
+            ctx->PSSetShaderResources(1, 1, &g_gbuffer[1].srv);
+            ctx->Draw(4, 0);
+            UnbindSRVs(ctx);
+        }
         g_enabled = true;
         LOG("Cabinet built: %zu shapes, %d light cells, %d booth patches, lighting at %dx%d",
             scene.shapes.size(), g_cellCount, g_patchCount, cw, ch);
@@ -1373,7 +1443,7 @@ bool CabinetLightInit(ID3D11Device* dev)
     const bool ok = CreateVS("VSFull", &g_vsFull) && CreateVS("VSShape", &g_vsShape)
         && CreatePS("PSShape", &g_psShape) && CreatePS("PSCells", &g_psCells) && CreatePS("PSPatches", &g_psPatches) && CreatePS("PSBounce", &g_psBounce)
         && CreatePS("PSCube", &g_psCube) && CreatePS("PSGloss", &g_psGloss) && CreatePS("PSShade", &g_psShade)
-        && CreatePS("PSBoothMap", &g_psBoothMap) && CreatePS("PSAcrylic", &g_psAcrylic) && CreatePS("PSHood", &g_psHood) && CreatePS("PSChrome", &g_psChrome)
+        && CreatePS("PSBoothMap", &g_psBoothMap) && CreatePS("PSAcrylic", &g_psAcrylic) && CreatePS("PSHood", &g_psHood) && CreatePS("PSChrome", &g_psChrome) && CreatePS("PSAO", &g_psAO)
         && SUCCEEDED(dev->CreateBuffer(&sb, nullptr, &g_shapeCB))
         && SUCCEEDED(dev->CreateBuffer(&cb, nullptr, &g_sceneCB))
         && SUCCEEDED(dev->CreateBlendState(&bc, &g_blendCover))
@@ -1475,6 +1545,7 @@ bool CabinetLightRender(ID3D11DeviceContext* ctx, int outWidth, int height, int 
                                              g_gloss[0].srv, g_gloss[1].srv, g_gloss[2].srv,
                                              g_gloss[3].srv, g_gloss[4].srv };
     ctx->PSSetShaderResources(0, 14, inputs);
+    ctx->PSSetShaderResources(16, 1, &g_ao.srv);
     ctx->Draw(4, 0);
     UnbindSRVs(ctx);
     return true;

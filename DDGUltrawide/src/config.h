@@ -32,7 +32,7 @@ struct Config
     float cabinetColor[3] = { 0xBA / 255.0f, 0xB3 / 255.0f, 0xA5 / 255.0f };   // the cabinet's beige-gray
     float cabinetScreenNits = 1000.0f;  // the screens' white, cd/m^2
     float cabinetRoomLux = 0.0f;        // the arcade's own lighting falling on the cabinet, lux (0 = none)
-    float roofLights = 1.0f;            // the booth's roof LED panels, in screen whites (0 = off)
+    float roofLights = 0.5f;            // the booth's roof LED panels, in screen whites (0 = off)
     float roofLightGlowMm = 25.0f;      // their soft edge in reflections, mm
     float hoodGlossDeg = 1.15f;         // how far the hood's paint blurs its reflections, degrees
 

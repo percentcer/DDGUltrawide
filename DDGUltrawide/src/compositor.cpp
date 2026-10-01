@@ -637,7 +637,7 @@ float4 PSPanel(VSOut i) : SV_Target
         UINT stencilRef;
         ID3D11RenderTargetView* rtv[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
         ID3D11DepthStencilView* dsv;
-        ID3D11ShaderResourceView* psSRV[16];
+        ID3D11ShaderResourceView* psSRV[17];
         ID3D11SamplerState* psSampler;
         ID3D11PixelShader* ps;
         ID3D11VertexShader* vs;
@@ -669,7 +669,7 @@ float4 PSPanel(VSOut i) : SV_Target
         g_ctx->OMGetBlendState(&b.blend, b.blendFactor, &b.sampleMask);
         g_ctx->OMGetDepthStencilState(&b.dss, &b.stencilRef);
         g_ctx->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, b.rtv, &b.dsv);
-        g_ctx->PSGetShaderResources(0, 16, b.psSRV);
+        g_ctx->PSGetShaderResources(0, 17, b.psSRV);
         g_ctx->PSGetSamplers(0, 1, &b.psSampler);
         b.psInstN = b.vsInstN = b.gsInstN = 256;
         g_ctx->PSGetShader(&b.ps, b.psInst, &b.psInstN);
@@ -695,7 +695,7 @@ float4 PSPanel(VSOut i) : SV_Target
         g_ctx->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, b.rtv, b.dsv);
         for (auto*& r : b.rtv) SafeRelease(r);
         SafeRelease(b.dsv);
-        g_ctx->PSSetShaderResources(0, 16, b.psSRV);
+        g_ctx->PSSetShaderResources(0, 17, b.psSRV);
         for (auto*& v : b.psSRV) SafeRelease(v);
         g_ctx->PSSetSamplers(0, 1, &b.psSampler); SafeRelease(b.psSampler);
         g_ctx->PSSetShader(b.ps, b.psInst, b.psInstN); SafeRelease(b.ps);
